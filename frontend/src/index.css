@@ -1,0 +1,44 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  html {
+    @apply antialiased;
+  }
+
+  body {
+    @apply bg-zinc-50 text-zinc-900;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  }
+}
+
+@layer components {
+  .page-container {
+    @apply max-w-[430px] mx-auto min-h-screen bg-white flex flex-col relative;
+  }
+
+  .page-content {
+    @apply flex-1 overflow-y-auto px-5 pb-32;
+  }
+
+  .section-label {
+    @apply text-xs font-semibold uppercase tracking-widest text-zinc-400;
+  }
+
+  .card {
+    @apply bg-white border border-zinc-200 rounded-2xl;
+  }
+
+  .metric-value {
+    @apply text-4xl font-bold tracking-tight text-zinc-900;
+  }
+
+  .metric-unit {
+    @apply text-lg font-normal text-zinc-400 ml-1;
+  }
+}
