@@ -1,5 +1,4 @@
 import { useNavigate } from 'react-router-dom'
-import { QRCodeSVG } from 'qrcode.react'
 import { Camera, ScanFace, Wand2, Eye, ShoppingBag } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
 
@@ -10,8 +9,6 @@ const STEPS = [
   { icon: Eye, label: 'AR try-on', desc: 'See the generated frame on your face in real time using three.js + your camera.' },
   { icon: ShoppingBag, label: 'Order', desc: 'Pick a material and we ship a 3D-printed frame to your door.' },
 ]
-
-const APP_URL = typeof window !== 'undefined' ? window.location.origin : 'https://optiframe.app'
 
 export default function Home() {
   const navigate = useNavigate()
@@ -52,40 +49,6 @@ export default function Home() {
               </div>
             )
           })}
-        </div>
-      </div>
-
-      <div className="h-px bg-zinc-100 mx-5" />
-
-      {/* QR Code */}
-      <div className="px-5 py-6">
-        <p className="section-label mb-3">Open on your phone</p>
-        <div className="card p-5 flex items-center gap-5">
-          <div className="flex-shrink-0 p-2 bg-white rounded-xl border border-zinc-100">
-            <QRCodeSVG
-              value={APP_URL}
-              size={80}
-              bgColor="transparent"
-              fgColor="#18181b"
-              level="M"
-            />
-          </div>
-          <div>
-            <p className="text-sm font-semibold text-zinc-900 mb-1">Scan to open</p>
-            <p className="text-sm text-zinc-500 leading-snug">
-              Requires HTTPS for camera access. Best on Chrome (Android) or Safari (iOS).
-            </p>
-          </div>
-        </div>
-      </div>
-
-      {/* Humanitarian context */}
-      <div className="px-5 pb-8">
-        <div className="card px-4 py-4 bg-zinc-50">
-          <p className="text-xs font-semibold text-zinc-700 mb-1">Why this exists</p>
-          <p className="text-xs text-zinc-500 leading-relaxed">
-            In many regions, opticians are inaccessible or unaffordable. Recycled lenses already exist — the missing piece is a frame that fits them exactly. OptiFrame makes that possible for a few dollars of filament.
-          </p>
         </div>
       </div>
 
