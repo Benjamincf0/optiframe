@@ -2,6 +2,7 @@ import { useNavigate } from 'react-router-dom'
 import PageHeader from '../components/PageHeader'
 import StepProgress from '../components/StepProgress'
 import BottomBar from '../components/BottomBar'
+import FrameViewer from '../components/FrameViewer'
 import { useSession } from '../context/SessionContext'
 import type { Pattern } from '../api/types'
 
@@ -165,26 +166,13 @@ export default function Customize() {
           )}
         </div>
 
-        {/* Mini schematic preview */}
+        {/* Interactive 3D preview */}
         <p className="section-label mb-2 mt-4">Preview</p>
-        <div className="card p-5 flex items-center justify-center mb-2">
-          <svg width="240" height="100" viewBox="0 0 240 100" fill="none">
-            {/* Left rim */}
-            <ellipse cx="68" cy="50" rx="52" ry="40" stroke="#1a1a1a" strokeWidth="4" fill={COLORS.find(col => col.id === c.color)?.hex ?? '#1a1a1a'} fillOpacity="0.15" />
-            {/* Right rim */}
-            <ellipse cx="172" cy="50" rx="52" ry="40" stroke="#1a1a1a" strokeWidth="4" fill={COLORS.find(col => col.id === c.color)?.hex ?? '#1a1a1a'} fillOpacity="0.15" />
-            {/* Bridge */}
-            <path d={`M${120 - c.frameParams.bridgeMm / 2},50 Q120,${50 - 8} ${120 + c.frameParams.bridgeMm / 2},50`}
-              stroke="#1a1a1a" strokeWidth="3" fill="none" />
-            {/* Left arm */}
-            <line x1="16" y1="50" x2="2" y2="50" stroke="#1a1a1a" strokeWidth="3" strokeLinecap="round" />
-            {/* Right arm */}
-            <line x1="224" y1="50" x2="238" y2="50" stroke="#1a1a1a" strokeWidth="3" strokeLinecap="round" />
-            {/* Bridge width label */}
-            <text x="120" y="92" textAnchor="middle" fontSize="7" fill="#71717a" fontFamily="monospace">
-              bridge {c.frameParams.bridgeMm.toFixed(1)} mm
-            </text>
-          </svg>
+        <div className="mb-2">
+          <FrameViewer
+            color={COLORS.find(col => col.id === c.color)?.hex ?? '#1a1a1a'}
+            colorLabel={COLORS.find(col => col.id === c.color)?.label ?? 'Matte black'}
+          />
         </div>
       </div>
 

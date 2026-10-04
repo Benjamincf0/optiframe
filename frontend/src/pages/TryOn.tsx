@@ -9,6 +9,11 @@ import { useSession } from '../context/SessionContext'
 import type { NormalizedLandmark } from '@mediapipe/tasks-vision'
 
 const IRIS_DIAMETER_MM = 11.7
+const NOSE_TIP = 4
+// Keep the effect believable: an AR frame should follow the head, rather than
+// exaggerating small landmark fluctuations into a theatrical rotation.
+const MAX_YAW_RADIANS = THREE.MathUtils.degToRad(38)
+const POSE_SMOOTHING = 0.18
 
 const COLOR_MAP: Record<string, number> = {
   black: 0x1a1a1a,
@@ -28,10 +33,11 @@ export default function TryOn() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null)
   const sceneRef = useRef<THREE.Scene | null>(null)
-  const cameraRef = useRef<THREE.OrthographicCamera | null>(null)
+  const cameraRef = useRef<THREE.PerspectiveCamera | null>(null)
   const meshRef = useRef<THREE.Mesh | null>(null)
   const rafRef = useRef<number | null>(null)
   const landmarksRef = useRef<NormalizedLandmark[] | null>(null)
+  const yawRef = useRef(0)
 
   const [bridgeAdj, setBridgeAdj] = useState(0)
   const [vertAdj, setVertAdj] = useState(0)
@@ -57,16 +63,20 @@ export default function TryOn() {
     const scene = new THREE.Scene()
     sceneRef.current = scene
 
-    const cam = new THREE.OrthographicCamera(-W / 2, W / 2, H / 2, -H / 2, 0.1, 10000)
+    // A perspective camera is important here.  An orthographic overlay can
+    // roll with the eye line, but its apparent shape never changes when the
+    // wearer turns.  At this distance the frame remains aligned to the video
+    // while its real STL depth, rims and bridge gain natural foreshortening.
+    const cam = new THREE.PerspectiveCamera(42, W / H, 1, 5000)
     cam.position.z = 1000
     cameraRef.current = cam
 
-    scene.add(new THREE.AmbientLight(0xffffff, 0.7))
-    const dir = new THREE.DirectionalLight(0xffffff, 0.8)
-    dir.position.set(0, 100, 500)
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x2b2b36, 1.15))
+    const dir = new THREE.DirectionalLight(0xffffff, 1.25)
+    dir.position.set(-180, 260, 500)
     scene.add(dir)
-    const fill = new THREE.DirectionalLight(0xffffff, 0.3)
-    fill.position.set(0, -100, 200)
+    const fill = new THREE.DirectionalLight(0xb9d8ff, 0.45)
+    fill.position.set(180, -80, 250)
     scene.add(fill)
   }
 
@@ -79,8 +89,8 @@ export default function TryOn() {
 
       const mat = new THREE.MeshStandardMaterial({
         color: frameColor,
-        roughness: 0.6,
-        metalness: 0.05,
+        roughness: 0.42,
+        metalness: 0.12,
       })
 
       if (meshRef.current && sceneRef.current) {
@@ -113,13 +123,24 @@ export default function TryOn() {
     }
 
     const lms = landmarksRef.current
-    const W = video.videoWidth || 640
-    const H = video.videoHeight || 480
+    const videoWidth = video.videoWidth || 640
+    const videoHeight = video.videoHeight || 480
+    const viewportWidth = canvasRef.current?.clientWidth || renderer.domElement.clientWidth
+    const viewportHeight = canvasRef.current?.clientHeight || renderer.domElement.clientHeight
+
+    // The video uses object-cover. Face Mesh coordinates are relative to the
+    // uncropped camera frame, but the canvas is sized to the visible portrait
+    // viewport. Convert into displayed pixels before using them as scene units.
+    // Using the raw camera pixels here made both the frame position and its
+    // mm-to-pixel scale grow with the camera resolution.
+    const coverScale = Math.max(viewportWidth / videoWidth, viewportHeight / videoHeight)
+    const displayedWidth = videoWidth * coverScale
+    const displayedHeight = videoHeight * coverScale
 
     // Front camera: video is CSS scaleX(-1), so flip landmark X for scene
     const toScene = (lm: NormalizedLandmark) => ({
-      x: (0.5 - lm.x) * W,
-      y: (0.5 - lm.y) * H,
+      x: (0.5 - lm.x) * displayedWidth,
+      y: (0.5 - lm.y) * displayedHeight,
     })
 
     const lIris = toScene(lms[IRIS_LEFT])
@@ -129,15 +150,36 @@ export default function TryOn() {
     const irisRadiusPx = Math.hypot(lIris.x - lBound.x, lIris.y - lBound.y)
     const pxPerMm = (2 * irisRadiusPx) / IRIS_DIAMETER_MM
 
+    // The relative distance from each iris to the nose changes reliably with
+    // head yaw.  It avoids depending on FaceLandmarker transformation-matrix
+    // support, which varies between MediaPipe browser builds.  The ratio keeps
+    // the result stable as the wearer moves closer to or farther from camera.
+    const nose = toScene(lms[NOSE_TIP])
+    const leftNoseDistance = Math.hypot(lIris.x - nose.x, lIris.y - nose.y)
+    const rightNoseDistance = Math.hypot(rIris.x - nose.x, rIris.y - nose.y)
+    const yawRatio = (leftNoseDistance - rightNoseDistance) /
+      Math.max(leftNoseDistance + rightNoseDistance, 1)
+    // `toScene` mirrors the camera feed and the STL is separately flipped on
+    // its X axis to face the camera.  Those coordinate transforms reverse the
+    // apparent yaw direction, so apply the landmark ratio with the opposite
+    // sign before rotating the model.
+    const targetYaw = THREE.MathUtils.clamp(-yawRatio * 2.4, -MAX_YAW_RADIANS, MAX_YAW_RADIANS)
+    yawRef.current = THREE.MathUtils.lerp(yawRef.current, targetYaw, POSE_SMOOTHING)
+
     // Bridge center: midpoint of iris positions, shifted down ~3 mm below eye line
     const bx = (lIris.x + rIris.x) / 2 + bridgeAdj * pxPerMm
     const by = (lIris.y + rIris.y) / 2 - (3 + vertAdj) * pxPerMm
 
     const tilt = Math.atan2(rIris.y - lIris.y, rIris.x - lIris.x)
 
-    mesh.position.set(bx, by, 0)
-    mesh.rotation.z = -tilt
-    mesh.scale.setScalar(pxPerMm)
+    // Convert display-pixel placement into the camera's world scale.  At the
+    // z=0 frame plane this preserves the existing pixel/mm fit, while allowing
+    // the perspective projection to change naturally as the frame rotates.
+    const visibleHeight = 2 * camera.position.z * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))
+    const worldPerPx = visibleHeight / viewportHeight
+    mesh.position.set(bx * worldPerPx, by * worldPerPx, 0)
+    mesh.rotation.set(Math.PI, yawRef.current, -tilt, 'YXZ')
+    mesh.scale.setScalar(pxPerMm * worldPerPx)
 
     renderer.render(scene, camera)
   }, [bridgeAdj, vertAdj, videoRef])
