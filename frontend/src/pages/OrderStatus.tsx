@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import { Download, X, RotateCcw, Package } from 'lucide-react'
+import PageHeader from '../components/PageHeader'
 import { useSession } from '../context/SessionContext'
 import { getOrder, cancelOrder, ApiClientError } from '../api/client'
 import type { OrderDetail, OrderStatus as OrderStatusType } from '../api/types'
@@ -72,26 +73,32 @@ export default function OrderStatus() {
 
   if (loading) {
     return (
-      <div className="page-container items-center justify-center min-h-screen gap-4">
-        <div className="w-10 h-10 border-2 border-zinc-300 border-t-zinc-900 rounded-full animate-spin" />
-        <p className="text-sm text-zinc-500">Loading order…</p>
+      <div className="page-container">
+        <PageHeader title="Order status" backTo="/" />
+        <main className="flex-1 flex flex-col items-center justify-center gap-4">
+          <div className="w-10 h-10 border-2 border-zinc-300 border-t-zinc-900 rounded-full animate-spin" />
+          <p className="text-sm text-zinc-500">Loading order…</p>
+        </main>
       </div>
     )
   }
 
   if (error && !order) {
     return (
-      <div className="page-container items-center justify-center min-h-screen px-8 text-center gap-5">
-        <Package size={36} className="text-zinc-400" />
-        <p className="text-base font-semibold text-zinc-900">Order not found</p>
-        <p className="text-sm text-zinc-500">{error}</p>
-        <p className="text-sm text-zinc-400 font-mono">{id}</p>
-        <button
-          onClick={() => navigate('/')}
-          className="h-12 px-8 rounded-2xl bg-zinc-900 text-white text-sm font-semibold"
-        >
-          Go home
-        </button>
+      <div className="page-container">
+        <PageHeader title="Order status" backTo="/" />
+        <main className="flex-1 flex flex-col items-center justify-center px-8 text-center gap-5">
+          <Package size={36} className="text-zinc-400" />
+          <p className="text-base font-semibold text-zinc-900">Order not found</p>
+          <p className="text-sm text-zinc-500">{error}</p>
+          <p className="text-sm text-zinc-400 font-mono">{id}</p>
+          <button
+            onClick={() => navigate('/')}
+            className="h-12 px-8 rounded-2xl bg-zinc-900 text-white text-sm font-semibold"
+          >
+            Go home
+          </button>
+        </main>
       </div>
     )
   }
@@ -102,7 +109,8 @@ export default function OrderStatus() {
 
   return (
     <div className="page-container">
-      <div className="px-5 pt-8 pb-2 flex items-start justify-between">
+      <PageHeader title="Order status" backTo="/" />
+      <div className="px-5 pt-4 pb-2 flex items-start justify-between">
         <div>
           <p className="text-xs font-semibold uppercase tracking-widest text-zinc-400 mb-1">Order</p>
           <p className="text-2xl font-bold font-mono text-zinc-900">{id}</p>
@@ -132,11 +140,11 @@ export default function OrderStatus() {
             {order && (
               <>
                 <p className="text-xs text-zinc-400 mt-0.5">
-                  L {order.left_A.toFixed(1)}×{order.left_B.toFixed(1)} · R {order.right_A.toFixed(1)}×{order.right_B.toFixed(1)} mm
+                  L {order.specs.left_lens.A.toFixed(1)}×{order.specs.left_lens.B.toFixed(1)} · R {order.specs.right_lens.A.toFixed(1)}×{order.specs.right_lens.B.toFixed(1)} mm
                 </p>
                 <p className="text-xs text-zinc-400">
-                  {order.material.toUpperCase()} · Bridge {order.bridge_mm.toFixed(1)} mm
-                  {order.engraving_text ? ` · "${order.engraving_text}"` : ''}
+                  {order.specs.material.toUpperCase()} · Bridge {order.specs.bridge_mm.toFixed(1)} mm
+                  {order.specs.engraving_text ? ` · "${order.specs.engraving_text}"` : ''}
                 </p>
               </>
             )}

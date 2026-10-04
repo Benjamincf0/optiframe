@@ -2,7 +2,9 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import * as THREE from 'three'
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js'
-import { Download, Camera, Minus, Plus, ShoppingBag, AlertTriangle } from 'lucide-react'
+import { Download, Minus, Plus, ShoppingBag, AlertTriangle } from 'lucide-react'
+import PageHeader from '../components/PageHeader'
+import StepProgress from '../components/StepProgress'
 import { useCamera } from '../hooks/useCamera'
 import { useFaceMesh, IRIS_LEFT, IRIS_RIGHT, IRIS_LEFT_BOUNDARY } from '../hooks/useFaceMesh'
 import { useSession } from '../context/SessionContext'
@@ -41,7 +43,6 @@ export default function TryOn() {
 
   const [bridgeAdj, setBridgeAdj] = useState(0)
   const [vertAdj, setVertAdj] = useState(0)
-  const [snapshot, setSnapshot] = useState<string | null>(null)
   const [stlError, setStlError] = useState<string | null>(null)
 
   const { stlBlob, stlHeaders, customize } = state
@@ -223,25 +224,6 @@ export default function TryOn() {
     rafRef.current = requestAnimationFrame(animate)
   }, [animate])
 
-  function takeSnapshot() {
-    const canvas = canvasRef.current
-    const video = videoRef.current
-    if (!canvas || !video) return
-
-    const tmp = document.createElement('canvas')
-    tmp.width = canvas.width
-    tmp.height = canvas.height
-    const ctx = tmp.getContext('2d')!
-    // Mirror video then overlay three.js canvas
-    ctx.save()
-    ctx.translate(tmp.width, 0)
-    ctx.scale(-1, 1)
-    ctx.drawImage(video, 0, 0, tmp.width, tmp.height)
-    ctx.restore()
-    ctx.drawImage(canvas, 0, 0)
-    setSnapshot(tmp.toDataURL('image/jpeg', 0.9))
-  }
-
   function downloadSTL() {
     if (!stlBlob) return
     const url = URL.createObjectURL(stlBlob)
@@ -254,6 +236,10 @@ export default function TryOn() {
 
   return (
     <div className="page-container bg-zinc-900">
+      <div className="bg-white">
+        <PageHeader title="AR try-on" backTo="/customize" />
+        <StepProgress current={5} />
+      </div>
       {/* AR viewport */}
       <div className="relative w-full aspect-[3/4] bg-zinc-950 overflow-hidden flex-shrink-0">
         <video
@@ -301,11 +287,6 @@ export default function TryOn() {
           ))}
         </div>
 
-        {snapshot && (
-          <div className="absolute bottom-4 left-4">
-            <img src={snapshot} alt="Snapshot" className="w-16 h-20 rounded-xl object-cover border-2 border-white shadow-lg" />
-          </div>
-        )}
       </div>
 
       {/* Controls */}
@@ -329,11 +310,8 @@ export default function TryOn() {
           </div>
         )}
 
-        <div className="flex gap-3">
-          <button onClick={takeSnapshot} className="flex-1 h-12 rounded-xl border border-zinc-200 text-sm font-medium text-zinc-700 flex items-center justify-center gap-2 active:bg-zinc-50">
-            <Camera size={15} /> Snapshot
-          </button>
-          <button onClick={downloadSTL} className="flex-1 h-12 rounded-xl border border-zinc-200 text-sm font-medium text-zinc-700 flex items-center justify-center gap-2 active:bg-zinc-50">
+        <div>
+          <button onClick={downloadSTL} className="w-full h-12 rounded-xl border border-zinc-200 text-sm font-medium text-zinc-700 flex items-center justify-center gap-2 active:bg-zinc-50">
             <Download size={15} /> Download STL
           </button>
         </div>

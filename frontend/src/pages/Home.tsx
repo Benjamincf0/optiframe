@@ -1,6 +1,7 @@
 import { useNavigate } from 'react-router-dom'
 import { QRCodeSVG } from 'qrcode.react'
 import { Camera, ScanFace, Wand2, Eye, ShoppingBag } from 'lucide-react'
+import PageHeader from '../components/PageHeader'
 
 const STEPS = [
   { icon: Camera, label: 'Capture lenses', desc: 'Photo each lens flat on a plain surface with a reference object for scale.' },
@@ -17,9 +18,9 @@ export default function Home() {
 
   return (
     <div className="page-container">
+      <PageHeader title="OptiFrame" />
       {/* Hero */}
-      <div className="px-5 pt-12 pb-8">
-        <p className="text-xs font-semibold uppercase tracking-widest text-zinc-400 mb-3">OptiFrame</p>
+      <div className="px-5 pt-8 pb-8">
         <h1 className="text-4xl font-bold tracking-tight text-zinc-900 leading-tight mb-4">
           Custom frames<br />for recycled<br />lenses.
         </h1>

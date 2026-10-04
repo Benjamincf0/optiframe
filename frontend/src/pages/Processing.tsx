@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { AlertTriangle, RotateCcw } from 'lucide-react'
+import PageHeader from '../components/PageHeader'
+import StepProgress from '../components/StepProgress'
 import { useSession } from '../context/SessionContext'
 import { measureLenses, ApiClientError } from '../api/client'
 import type { MeasureResponse } from '../api/types'
@@ -72,42 +74,48 @@ export default function Processing() {
 
   if (error) {
     return (
-      <div className="page-container items-center justify-center min-h-screen px-8 text-center gap-6">
-        <div className="w-16 h-16 rounded-full bg-red-50 flex items-center justify-center mx-auto">
-          <AlertTriangle size={28} className="text-red-500" />
-        </div>
-        <div>
-          <p className="text-base font-semibold text-zinc-900 mb-2">Analysis failed</p>
-          <p className="text-sm text-zinc-500">{error}</p>
-        </div>
-        <button
-          onClick={() => navigate('/capture')}
-          className="mt-4 h-12 px-8 rounded-2xl bg-zinc-900 text-white text-sm font-semibold flex items-center gap-2 mx-auto active:scale-[0.98] transition-all"
-        >
-          <RotateCcw size={15} />
-          Retake photos
-        </button>
+      <div className="page-container">
+        <PageHeader title="Measuring lenses" backTo="/capture" />
+        <StepProgress current={2} />
+        <main className="flex-1 flex flex-col items-center justify-center px-8 text-center gap-6">
+          <div className="w-16 h-16 rounded-full bg-red-50 flex items-center justify-center mx-auto">
+            <AlertTriangle size={28} className="text-red-500" />
+          </div>
+          <div>
+            <p className="text-base font-semibold text-zinc-900 mb-2">Analysis failed</p>
+            <p className="text-sm text-zinc-500">{error}</p>
+          </div>
+          <button
+            onClick={() => navigate('/capture')}
+            className="mt-4 h-12 px-8 rounded-2xl bg-zinc-900 text-white text-sm font-semibold flex items-center gap-2 mx-auto active:scale-[0.98] transition-all"
+          >
+            <RotateCcw size={15} />
+            Retake photos
+          </button>
+        </main>
       </div>
     )
   }
 
   return (
-    <div className="page-container items-center justify-center min-h-screen px-8 text-center gap-10">
-      {/* Animated rings */}
-      <div className="relative flex items-center justify-center">
-        <div className="w-20 h-20 rounded-full border-2 border-zinc-200 animate-ping absolute opacity-30" />
-        <div className="w-20 h-20 rounded-full border-2 border-t-zinc-900 border-zinc-200 animate-spin" />
-        <div className="absolute w-10 h-10 rounded-full bg-zinc-900" />
-      </div>
+    <div className="page-container">
+      <PageHeader title="Measuring lenses" backTo="/capture" />
+      <StepProgress current={2} />
+      <main className="flex-1 flex flex-col items-center justify-center px-8 text-center gap-10">
+        {/* Animated rings */}
+        <div className="relative flex items-center justify-center">
+          <div className="w-20 h-20 rounded-full border-2 border-zinc-200 animate-ping absolute opacity-30" />
+          <div className="w-20 h-20 rounded-full border-2 border-t-zinc-900 border-zinc-200 animate-spin" />
+          <div className="absolute w-10 h-10 rounded-full bg-zinc-900" />
+        </div>
 
-      <div>
-        <p className="text-base font-semibold text-zinc-900 mb-2">Analysing lenses</p>
-        <p className="text-sm text-zinc-400 transition-all duration-500">{STATUS_STEPS[statusIdx]}</p>
-      </div>
+        <div>
+          <p className="text-base font-semibold text-zinc-900 mb-2">Analysing lenses</p>
+          <p className="text-sm text-zinc-400 transition-all duration-500">{STATUS_STEPS[statusIdx]}</p>
+        </div>
 
-      <p className="text-xs text-zinc-300 absolute bottom-12">
-        Images processed securely — never stored on our servers
-      </p>
+        <p className="text-xs text-zinc-300">Images processed securely — never stored on our servers</p>
+      </main>
     </div>
   )
 }

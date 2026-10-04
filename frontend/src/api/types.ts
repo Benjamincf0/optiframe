@@ -39,6 +39,7 @@ export interface MeasureResponse {
 
 export type Pattern = 'none' | 'woven' | 'honeycomb' | 'brushed' | 'dots'
 export type Material = 'petg' | 'pla' | 'asa'
+export type Color = 'matte_black' | 'tortoiseshell' | 'crystal' | 'navy' | 'bone' | 'olive'
 
 export interface GenerateRequest {
   left_contour_mm: [number, number][]
@@ -78,12 +79,24 @@ export interface QuoteResponse {
 }
 
 export interface OrderRequest {
+  design: GenerateRequest
   design_signature: string
   material: Material
-  color: string
+  color: Color
   email: string
-  shipping_address: string
+  shipping_address: ShippingAddress
+  payment?: { provider: 'fake'; token: string }
   sponsor_code?: string
+}
+
+export interface ShippingAddress {
+  name: string
+  line1: string
+  line2?: string
+  city: string
+  postal_code: string
+  region?: string
+  country: string
 }
 
 export interface OrderResponse {
@@ -91,7 +104,9 @@ export interface OrderResponse {
   access_token: string
   status: OrderStatus
   estimated_delivery: { from: string; to: string }
-  total: number
+  email: string
+  specs: OrderSpecs
+  pricing: Pricing
 }
 
 export type OrderStatus = 'received' | 'printing' | 'shipped' | 'delivered' | 'cancelled'
@@ -100,17 +115,35 @@ export interface OrderDetail {
   order_id: string
   status: OrderStatus
   estimated_delivery: { from: string; to: string }
-  material: Material
-  color: string
   email: string
-  left_A: number
-  left_B: number
-  right_A: number
-  right_B: number
-  bridge_mm: number
-  engraving_text: string
-  total: number
+  shipping_address: ShippingAddress
+  specs: OrderSpecs
+  pricing: Pricing
   tracking_number?: string
+  can_cancel: boolean
+}
+
+export interface OrderSpecs {
+  left_lens: { A: number; B: number }
+  right_lens: { A: number; B: number }
+  bridge_mm: number
+  depth_mm: number
+  rim_offset_mm: number
+  clip_clearance_mm: number
+  pattern: Pattern
+  engraving_text: string
+  material: Material
+  color: Color
+}
+
+export interface Pricing {
+  grams: number
+  material_cost: number
+  shipping: number
+  discount: number
+  total: number
+  currency: string
+  sponsored: boolean
 }
 
 export interface ApiError {
