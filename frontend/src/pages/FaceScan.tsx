@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Shield, ScanFace, ChevronRight, Minus, Plus } from 'lucide-react'
 import PageHeader from '../components/PageHeader'
@@ -7,6 +7,32 @@ import BottomBar from '../components/BottomBar'
 import { useCamera } from '../hooks/useCamera'
 import { useFaceMesh } from '../hooks/useFaceMesh'
 import { useSession } from '../context/SessionContext'
+
+type Viewport = { width: number; height: number }
+
+/**
+ * Convert a FaceLandmarker coordinate to the visible position in a video that
+ * is rendered with `object-cover`. Landmarks describe the complete camera
+ * frame, whereas object-cover crops that frame when its aspect ratio differs
+ * from the viewfinder (which varies between cameras).
+ */
+function coverPosition(
+  x: number,
+  y: number,
+  videoWidth: number,
+  videoHeight: number,
+  viewport: Viewport,
+) {
+  const scale = Math.max(viewport.width / videoWidth, viewport.height / videoHeight)
+  const displayedWidth = videoWidth * scale
+  const displayedHeight = videoHeight * scale
+
+  return {
+    // The video is mirrored with scaleX(-1), so mirror X before applying its crop.
+    left: ((1 - x) * displayedWidth + (viewport.width - displayedWidth) / 2) / viewport.width * 100,
+    top: (y * displayedHeight + (viewport.height - displayedHeight) / 2) / viewport.height * 100,
+  }
+}
 
 export default function FaceScan() {
   const navigate = useNavigate()
@@ -18,6 +44,8 @@ export default function FaceScan() {
   const [manualBridge, setManualBridge] = useState(state.customize.frameParams.bridgeMm)
   const [locked, setLocked] = useState(false)
   const [lockedMetrics, setLockedMetrics] = useState<typeof metrics>(null)
+  const viewportRef = useRef<HTMLDivElement>(null)
+  const [viewport, setViewport] = useState<Viewport | null>(null)
 
   const confirmed = locked || skipped
 
@@ -37,6 +65,30 @@ export default function FaceScan() {
       startDetection(videoRef.current)
     }
   }, [isReady, isActive, skipped, confirmed]) // eslint-disable-line
+
+  // Keep overlay coordinates tied to the rendered viewport, including device
+  // rotation and browser chrome changes. videoWidth/videoHeight comes from the
+  // active camera stream in `metrics`.
+  useEffect(() => {
+    const element = viewportRef.current
+    if (!element) return
+
+    const updateViewport = () => {
+      const { width, height } = element.getBoundingClientRect()
+      setViewport({ width, height })
+    }
+    updateViewport()
+    const observer = new ResizeObserver(updateViewport)
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [])
+
+  const leftIrisPosition = metrics && viewport
+    ? coverPosition(metrics.landmarks[468].x, metrics.landmarks[468].y, metrics.videoWidth, metrics.videoHeight, viewport)
+    : null
+  const rightIrisPosition = metrics && viewport
+    ? coverPosition(metrics.landmarks[473].x, metrics.landmarks[473].y, metrics.videoWidth, metrics.videoHeight, viewport)
+    : null
 
   const lockPD = useCallback(() => {
     if (!metrics) return
@@ -83,7 +135,7 @@ export default function FaceScan() {
         */}
         <div className={`mb-4 ${confirmed || skipped ? 'hidden' : ''}`}>
           <p className="section-label mb-2">Look straight at the camera</p>
-          <div className="relative aspect-[3/4] rounded-2xl overflow-hidden bg-zinc-900">
+          <div ref={viewportRef} className="relative aspect-[3/4] rounded-2xl overflow-hidden bg-zinc-900">
             <video
               ref={videoRef}
               autoPlay
@@ -102,22 +154,22 @@ export default function FaceScan() {
             )}
 
             {/* Face detected — landmark dots + PD readout */}
-            {isReady && metrics && (
+            {isReady && metrics && leftIrisPosition && rightIrisPosition && (
               <div className="absolute inset-0">
                 {/* Iris dots */}
                 <div
                   className="absolute w-3 h-3 rounded-full bg-green-400 border-2 border-white shadow"
                   style={{
-                    left: `${(1 - metrics.landmarks[468].x) * 100}%`,
-                    top: `${metrics.landmarks[468].y * 100}%`,
+                    left: `${leftIrisPosition.left}%`,
+                    top: `${leftIrisPosition.top}%`,
                     transform: 'translate(-50%, -50%)',
                   }}
                 />
                 <div
                   className="absolute w-3 h-3 rounded-full bg-green-400 border-2 border-white shadow"
                   style={{
-                    left: `${(1 - metrics.landmarks[473].x) * 100}%`,
-                    top: `${metrics.landmarks[473].y * 100}%`,
+                    left: `${rightIrisPosition.left}%`,
+                    top: `${rightIrisPosition.top}%`,
                     transform: 'translate(-50%, -50%)',
                   }}
                 />
