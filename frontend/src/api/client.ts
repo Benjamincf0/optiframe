@@ -8,6 +8,7 @@ import type {
   OrderResponse,
   OrderDetail,
   ReferenceSpec,
+  LensHint,
 } from './types'
 
 const BASE = import.meta.env.VITE_API_BASE_URL ?? '/api'
@@ -41,8 +42,8 @@ export async function measureLenses(
   leftImage: File,
   rightImage: File,
   reference: ReferenceSpec,
-  leftHint?: [number, number, number, number],
-  rightHint?: [number, number, number, number],
+  leftHint?: LensHint | null,
+  rightHint?: LensHint | null,
 ): Promise<MeasureResponse> {
   const form = new FormData()
   form.append('left_image', leftImage)
@@ -71,10 +72,19 @@ export async function generateSTL(req: GenerateRequest): Promise<{ blob: Blob; h
     volumeMm3: parseFloat(res.headers.get('X-Volume-Mm3') ?? '0'),
     maxDeviationMm: parseFloat(res.headers.get('X-Max-Deviation-Mm') ?? '0'),
     frameWidthMm: parseFloat(res.headers.get('X-Frame-Width-Mm') ?? '0'),
-    lensInterCentersMm: parseFloat(res.headers.get('X-Lens-Centers-Mm') ?? '0'),
+    lensCentersMm: parseLensCenters(res.headers.get('X-Lens-Centers-Mm')),
     designSignature: res.headers.get('X-Design-Signature') ?? '',
   }
   return { blob, headers }
+}
+
+function parseLensCenters(raw: string | null): STLHeaders['lensCentersMm'] {
+  if (!raw) return null
+  try {
+    return JSON.parse(raw) as STLHeaders['lensCentersMm']
+  } catch {
+    return null
+  }
 }
 
 export async function getQuote(req: QuoteRequest): Promise<QuoteResponse> {

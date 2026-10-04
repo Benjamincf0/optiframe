@@ -1,4 +1,6 @@
 import asyncio
+import logging
+import time
 from functools import partial
 from typing import Literal
 
@@ -18,6 +20,7 @@ router = APIRouter(tags=["measurement"], dependencies=[Depends(rate_limited)])
 _reference_adapter = TypeAdapter(Reference)
 _hint_adapter = TypeAdapter(tuple[float, float, float, float])
 ASYMMETRY_MM = 5.0
+log = logging.getLogger("optiframe")
 
 
 def _reference_spec(raw: str) -> ReferenceSpec:
@@ -47,7 +50,15 @@ async def _measure_one(request: Request, data: bytes, ref: ReferenceSpec, hint, 
         raise AppError("SERVICE_UNAVAILABLE", "Lens measurement is temporarily unavailable.")
     job = partial(measure_lens, data, ref, hint, side, segmenter, max_pixels=s.max_image_pixels,
                   segmentation_runs=s.segmentation_runs)
-    return await run_compute(request, job, timeout=s.measure_timeout_s)
+    try:
+        return await run_compute(request, job, timeout=s.measure_timeout_s)
+    except AppError as exc:
+        if s.debug_dump_dir is not None:
+            s.debug_dump_dir.mkdir(parents=True, exist_ok=True)
+            path = s.debug_dump_dir / f"{time.strftime('%Y%m%d-%H%M%S')}-{side}-{exc.code}.img"
+            path.write_bytes(data)
+            log.warning("Saved rejected %s photo to %s", side, path)
+        raise
 
 
 @router.post("/measure", response_model=MeasureResponse)

@@ -66,11 +66,16 @@ def refine_edge(gray: np.ndarray, mask: np.ndarray, scale: float, n: int = 720,
     g = gaussian_filter(gray.astype(np.float32), 1.0)
     gy, gx = np.gradient(g)
     mag = np.hypot(gx, gy)
+    # Sharpness test: a real glass edge is a step (fine-scale gradient ≫ coarse-scale gradient);
+    # shadows and shading are soft (both similar), so they are never snapped to.
+    gyc, gxc = np.gradient(gaussian_filter(gray.astype(np.float32), 3.0))
+    mag_coarse = np.hypot(gxc, gyc)
     reach = reach_mm * scale
     ts = np.arange(-reach, reach + 1e-6, 0.25)
     xs = pts[:, 0:1] + normals[:, 0:1] * ts[None]
     ys = pts[:, 1:2] + normals[:, 1:2] * ts[None]
     prof = map_coordinates(mag, [ys.ravel(), xs.ravel()], order=1, mode="nearest").reshape(xs.shape)
+    prof_c = map_coordinates(mag_coarse, [ys.ravel(), xs.ravel()], order=1, mode="nearest").reshape(xs.shape)
 
     noise = float(np.median(mag)) + 1e-6
     shifts = np.zeros(n)
@@ -83,8 +88,12 @@ def refine_edge(gray: np.ndarray, mask: np.ndarray, scale: float, n: int = 720,
         strongest = p[peaks].max()
         if strongest < max(6.0, 4 * noise):
             continue
-        strong = peaks[p[peaks] >= 0.6 * strongest]
-        j = int(strong.max())  # outermost strong edge = outer boundary of the lens edge band
+        # Snap to the nearest *sharp* edge: the model's boundary is already close, and the nearest-sharp rule
+        # can't jump to a shadow or to desk texture further out (an "outermost edge" rule did, by 1–2 mm).
+        sharp = peaks[(p[peaks] >= 0.4 * strongest) & (p[peaks] / (prof_c[i][peaks] + 1e-6) >= 1.6)]
+        if len(sharp) == 0:
+            continue
+        j = int(sharp[np.argmin(np.abs(ts[sharp]))])
         off = ts[j]
         y0, y1, y2 = p[j - 1], p[j], p[j + 1]
         den = y0 - 2 * y1 + y2

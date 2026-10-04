@@ -22,10 +22,13 @@ export interface LensResult {
 }
 
 export interface MeasureWarning {
-  code: 'LOW_RESOLUTION' | 'LIKELY_COMPRESSED' | 'ANGLE_TOO_STEEP'
+  code: 'LOW_RESOLUTION' | 'LIKELY_COMPRESSED' | 'FAINT_EDGE'
   side: 'left' | 'right'
   message: string
 }
+
+/** Lens placement zone in the captured image, normalised [x0, y0, x1, y1] (0–1). Sent as the segmentation hint. */
+export type LensHint = [number, number, number, number]
 
 export interface MeasureResponse {
   left: LensResult
@@ -52,7 +55,8 @@ export interface STLHeaders {
   volumeMm3: number
   maxDeviationMm: number
   frameWidthMm: number
-  lensInterCentersMm: number
+  /** Lens box centres in STL coordinates (mm); wearer's right lens is on −x. Null if the header is missing. */
+  lensCentersMm: { right: [number, number]; left: [number, number] } | null
   designSignature: string
 }
 

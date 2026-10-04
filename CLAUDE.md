@@ -89,7 +89,7 @@ Hints are strongly recommended (send the capture overlay's lens zone). Without o
 {
   "left": LensResult, "right": LensResult,
   "asymmetric": bool,                 // |ΔA| or |ΔB| > 5 mm
-  "warnings": [{"code":"LOW_RESOLUTION"|"LIKELY_COMPRESSED","side":"left","message":"..."}]
+  "warnings": [{"code":"LOW_RESOLUTION"|"LIKELY_COMPRESSED"|"FAINT_EDGE","side":"left","message":"..."}]
 }
 LensResult = {
   "contour_mm": [[x,y],...], "A": 52.3, "B": 38.1, "perimeter": 152.7,   // ISO 8624 boxing

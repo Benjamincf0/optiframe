@@ -73,7 +73,7 @@ class LensResult(BaseModel):
 
 
 class Warning_(BaseModel):
-    code: Literal["LOW_RESOLUTION", "LIKELY_COMPRESSED"]
+    code: Literal["LOW_RESOLUTION", "LIKELY_COMPRESSED", "FAINT_EDGE"]
     side: Literal["left", "right"] | None = None
     message: str
 

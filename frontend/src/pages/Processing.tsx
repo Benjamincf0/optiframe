@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { AlertTriangle, RotateCcw } from 'lucide-react'
 import { useSession } from '../context/SessionContext'
 import { measureLenses, ApiClientError } from '../api/client'
+import type { MeasureResponse } from '../api/types'
 
 const STATUS_STEPS = [
   'Detecting reference object…',
@@ -25,6 +26,7 @@ export default function Processing() {
   const { state, dispatch } = useSession()
   const [statusIdx, setStatusIdx] = useState(0)
   const [error, setError] = useState<string | null>(null)
+  const request = useRef<Promise<MeasureResponse> | null>(null)
 
   useEffect(() => {
     if (!state.leftFile || !state.rightFile) {
@@ -39,12 +41,19 @@ export default function Processing() {
       setStatusIdx(idx)
     }, 2500)
 
-    async function run() {
-      try {
-        const result = await measureLenses(state.leftFile!, state.rightFile!, state.reference)
+    // StrictMode runs effects twice in dev: reuse the in-flight request instead of measuring twice.
+    request.current ??= measureLenses(
+      state.leftFile, state.rightFile, state.reference, state.leftHint, state.rightHint,
+    )
+    let active = true
+    request.current
+      .then(result => {
+        if (!active) return
         dispatch({ type: 'SET_MEASUREMENTS', measurements: result })
         navigate('/measurements')
-      } catch (err) {
+      })
+      .catch(err => {
+        if (!active) return
         let msg = 'Something went wrong. Please try again.'
         if (err instanceof ApiClientError) {
           msg = ERROR_MESSAGES[err.code] ?? err.message
@@ -52,13 +61,13 @@ export default function Processing() {
           msg = 'Could not reach the server. Check your connection.'
         }
         setError(msg)
-      } finally {
-        clearInterval(interval)
-      }
-    }
+      })
+      .finally(() => clearInterval(interval))
 
-    run()
-    return () => clearInterval(interval)
+    return () => {
+      active = false
+      clearInterval(interval)
+    }
   }, []) // eslint-disable-line
 
   if (error) {

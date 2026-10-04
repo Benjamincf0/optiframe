@@ -31,8 +31,13 @@ def _reference_mask(plane: Plane, warp, shape) -> np.ndarray:
 
 def _candidates(gray: np.ndarray, allowed: np.ndarray, scale: float) -> list[tuple[float, tuple]]:
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    med = float(np.median(blurred[allowed > 0])) if np.any(allowed) else 128.0
-    edges = cv2.Canny(blurred, int(max(8, 0.33 * med)), int(min(255, max(30, 0.9 * med))))
+    # Thresholds from the gradient distribution (not brightness): clear lenses on light desks have faint edges.
+    gx = cv2.Sobel(blurred, cv2.CV_32F, 1, 0)
+    gy = cv2.Sobel(blurred, cv2.CV_32F, 0, 1)
+    mag = np.hypot(gx, gy)
+    vals = mag[allowed > 0]
+    hi = float(np.clip(np.percentile(vals, 93), 12, 200)) if vals.size else 40.0
+    edges = cv2.Canny(blurred, int(0.4 * hi), int(hi))
     edges[allowed == 0] = 0
     k = max(3, int(round(1.5 * scale)) | 1)
     closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
@@ -58,9 +63,37 @@ def _candidates(gray: np.ndarray, allowed: np.ndarray, scale: float) -> list[tup
     return sorted(out, reverse=True)
 
 
-def locate_lens(bgr: np.ndarray, plane: Plane, hint_mm: tuple[float, float, float, float] | None
-                ) -> tuple[float, float, float, float] | None:
-    """Return the lens box (x0, y0, x1, y1) in metric mm, or None."""
+MAX_CANDIDATES = 4
+Box = tuple[float, float, float, float]
+
+
+def _box_iou(a: Box, b: Box) -> float:
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    inter = ix * iy
+    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return inter / union if union > 0 else 0.0
+
+
+def locate_lens(bgr: np.ndarray, plane: Plane, hint_mm: Box | None) -> list[Box]:
+    """Candidate lens boxes (x0, y0, x1, y1) in metric mm, best first.
+
+    Candidates are only *proposals*: the caller verifies each with the segmentation model. With a hint, boxes inside
+    the hint come first, followed by whole-photo candidates (the lens may not be where the user was told to put it).
+    """
+    if hint_mm is None:
+        return _locate(bgr, plane, None)
+    out = _locate(bgr, plane, hint_mm)[:2]  # leave room for whole-photo candidates
+    for box in _locate(bgr, plane, None):
+        if all(_box_iou(box, o) < 0.5 for o in out):
+            out.append(box)
+    hx0, hy0, hx1, hy1 = hint_mm
+    if LENS_MIN_MM <= hx1 - hx0 <= LENS_MAX_MM + 20 and LENS_MIN_MM * 0.6 <= hy1 - hy0 <= LENS_MAX_MM + 20:
+        out.append(hint_mm)
+    return out[:MAX_CANDIDATES]
+
+
+def _locate(bgr: np.ndarray, plane: Plane, hint_mm: Box | None) -> list[Box]:
     if hint_mm is not None:
         hx0, hy0, hx1, hy1 = hint_mm
         pad = 6.0
@@ -73,13 +106,12 @@ def locate_lens(bgr: np.ndarray, plane: Plane, hint_mm: tuple[float, float, floa
     gray = cv2.cvtColor(warp.image, cv2.COLOR_BGR2GRAY)
     allowed = cv2.erode(warp.valid, np.ones((7, 7), np.uint8))
     allowed[_reference_mask(plane, warp, gray.shape) > 0] = 0
-    cands = _candidates(gray, allowed, warp.scale)
-    if cands:
-        x0, y0, x1, y1 = cands[0][1]
+    boxes: list[Box] = []
+    for _, (x0, y0, x1, y1) in _candidates(gray, allowed, warp.scale):
         p = warp.px_to_mm(np.array([[x0, y0], [x1, y1]], dtype=np.float64))
-        return (p[0, 0], p[0, 1], p[1, 0], p[1, 1])
-    if hint_mm is not None:
-        hx0, hy0, hx1, hy1 = hint_mm
-        if LENS_MIN_MM <= hx1 - hx0 <= LENS_MAX_MM + 20 and LENS_MIN_MM * 0.6 <= hy1 - hy0 <= LENS_MAX_MM + 20:
-            return hint_mm
-    return None
+        box = (float(p[0, 0]), float(p[0, 1]), float(p[1, 0]), float(p[1, 1]))
+        if all(_box_iou(box, b) < 0.5 for b in boxes):
+            boxes.append(box)
+        if len(boxes) == MAX_CANDIDATES:
+            break
+    return boxes

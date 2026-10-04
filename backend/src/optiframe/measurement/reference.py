@@ -78,8 +78,8 @@ def _edge_rise_width(profile: np.ndarray, step: float) -> float | None:
     return float((i90 - i10) * step)
 
 
-def refine_quad(gray: np.ndarray, corners: np.ndarray, *, margin: float = 0.12, samples: int = 24
-                ) -> tuple[np.ndarray, float, float | None]:
+def refine_quad(gray: np.ndarray, corners: np.ndarray, *, margin: float = 0.12, samples: int = 24,
+                reach_frac: float = 0.015) -> tuple[np.ndarray, float, float | None]:
     """Refine corners by fitting a line to each side's strongest gradient.
 
     Avoids the corner regions (rounded card corners) and returns
@@ -96,7 +96,7 @@ def refine_quad(gray: np.ndarray, corners: np.ndarray, *, margin: float = 0.12, 
             return corners, 99.0, None
         d = d / length
         n = np.array([-d[1], d[0]])
-        reach = 3.0 + 0.015 * length
+        reach = 3.0 + reach_frac * length
         ts = np.arange(-reach, reach + 1e-6, 0.25)
         pts = []
         for f in np.linspace(margin, 1 - margin, samples):
@@ -190,10 +190,21 @@ def _detect_aruco(gray: np.ndarray, spec: ReferenceSpec) -> DetectedReference | 
 
 def _quad_candidates(gray_small: np.ndarray, bgr_small: np.ndarray) -> list[np.ndarray]:
     blurred = cv2.GaussianBlur(gray_small, (5, 5), 0)
-    med = float(np.median(blurred))
     binaries = []
-    canny = cv2.Canny(blurred, int(max(10, 0.5 * med)), int(min(255, max(40, 1.2 * med))))
-    binaries.append(cv2.dilate(canny, np.ones((3, 3), np.uint8)))
+    # Edge thresholds must follow edge *strength*, not brightness: a white card on a light desk has edges of only
+    # a few grey levels in a very bright image. Several sensitivity levels; the scoring picks the best quad.
+    # Edges in colour channels too: a tinted card can match the desk's brightness and differ only in hue.
+    lab = cv2.cvtColor(cv2.GaussianBlur(bgr_small, (5, 5), 0), cv2.COLOR_BGR2LAB)
+    channels = [blurred, lab[:, :, 1], lab[:, :, 2]]
+    close = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))  # bridges gaps from glare / weak edge segments
+    for lo, hi in ((8, 24), (20, 60), (45, 135)):
+        edges = np.zeros_like(blurred)
+        for ch in channels:
+            edges |= cv2.Canny(ch, lo, hi)
+        binaries.append(cv2.dilate(edges, np.ones((3, 3), np.uint8)))
+        binaries.append(cv2.morphologyEx(edges, cv2.MORPH_CLOSE, close))
+    eq = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8)).apply(blurred)
+    binaries.append(cv2.dilate(cv2.Canny(eq, 30, 90), np.ones((3, 3), np.uint8)))
     _, otsu = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     binaries += [otsu, 255 - otsu]
     sat = cv2.cvtColor(bgr_small, cv2.COLOR_BGR2HSV)[:, :, 1]
@@ -211,14 +222,17 @@ def _quad_candidates(gray_small: np.ndarray, bgr_small: np.ndarray) -> list[np.n
             if area < 0.004 * img_area or area > 0.97 * img_area:
                 continue
             hull = cv2.convexHull(c)
-            peri = cv2.arcLength(hull, True)
-            approx = cv2.approxPolyDP(hull, 0.02 * peri, True)
-            if len(approx) != 4 or not cv2.isContourConvex(approx):
+            if len(hull) < 4:  # approxPolyN asserts on hulls with fewer points than sides
+                continue
+            # Exactly 4 sides (rounded corners and gap-closing make fixed-epsilon approxPolyDP return 5–8 vertices).
+            approx = cv2.approxPolyN(hull, 4, ensure_convex=True).reshape(-1, 2)  # returned as (1, 4, 2)
+            if len(approx) != 4:
                 continue
             quad_area = cv2.contourArea(approx)
-            if quad_area <= 0 or area / quad_area < 0.85:
+            # The quad must explain the shape: rectangles fill it, ellipses (lenses) and blobs don't.
+            if quad_area <= 0 or not 0.9 <= cv2.contourArea(hull) / quad_area <= 1.02:
                 continue
-            quads.append(approx.reshape(4, 2).astype(np.float64))
+            quads.append(approx.astype(np.float64))
     return quads
 
 
@@ -236,17 +250,69 @@ def metric_aspect(quad: np.ndarray, image_shape: tuple[int, int]) -> float:
     return float(np.linalg.norm(M[:, 0]) / max(np.linalg.norm(M[:, 1]), 1e-12))
 
 
-def _detect_rect(gray: np.ndarray, bgr: np.ndarray, spec: ReferenceSpec) -> DetectedReference | None:
+MAX_SAM_REFERENCE_PROMPTS = 4
+
+
+def _sam_quad_candidates(bgr_small: np.ndarray, segmenter) -> list[np.ndarray]:
+    """Fallback for references whose outline is too faint/broken to trace: segment salient blobs with the model.
+
+    Blobs are regions whose colour differs from the dominant background; each is prompted with its innermost point,
+    and every returned mask that is well explained by a 4-sided polygon becomes a candidate quad.
+    """
+    h, w = bgr_small.shape[:2]
+    lab = cv2.cvtColor(cv2.GaussianBlur(bgr_small, (9, 9), 0), cv2.COLOR_BGR2LAB).astype(np.float32)
+    bg = np.median(lab.reshape(-1, 3), axis=0)
+    dist = np.linalg.norm(lab - bg, axis=2)
+    dist8 = np.clip(dist * (255.0 / max(float(np.percentile(dist, 99.5)), 1.0)), 0, 255).astype(np.uint8)
+    _, fg = cv2.threshold(dist8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(fg)
+    blobs = [i for i in range(1, n) if 0.003 * h * w <= stats[i, cv2.CC_STAT_AREA] <= 0.5 * h * w]
+    blobs = sorted(blobs, key=lambda i: stats[i, cv2.CC_STAT_AREA], reverse=True)[:MAX_SAM_REFERENCE_PROMPTS]
+    quads = []
+    for i in blobs:
+        comp = (labels == i).astype(np.uint8)
+        dt = cv2.distanceTransform(comp, cv2.DIST_L2, 5)
+        y, x = np.unravel_index(int(np.argmax(dt)), dt.shape)
+        for cand in segmenter.predict_point(bgr_small, (float(x), float(y))):
+            m = cand.mask.astype(np.uint8)
+            contours, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if not contours:
+                continue
+            c = max(contours, key=cv2.contourArea)
+            area = cv2.contourArea(c)
+            if area < 0.003 * h * w:
+                continue
+            hull = cv2.convexHull(c)
+            if len(hull) < 4:
+                continue
+            approx = cv2.approxPolyN(hull, 4, ensure_convex=True).reshape(-1, 2)
+            quad_area = cv2.contourArea(approx)
+            if len(approx) == 4 and quad_area > 0 and 0.93 <= area / quad_area <= 1.02:
+                quads.append(approx.astype(np.float64))
+    return quads
+
+
+def _detect_rect(gray: np.ndarray, bgr: np.ndarray, spec: ReferenceSpec, segmenter=None) -> DetectedReference | None:
     scale = min(1.0, 1600 / max(gray.shape))
     gray_s = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA) if scale < 1 else gray
     bgr_s = cv2.resize(bgr, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA) if scale < 1 else bgr
     expected = max(spec.width_mm, spec.height_mm) / min(spec.width_mm, spec.height_mm)
     img_area = gray_s.shape[0] * gray_s.shape[1]
 
+    best = _best_quad(_quad_candidates(gray_s, bgr_s), scale, gray.shape, expected, img_area)
+    if best is None and segmenter is not None:
+        best = _best_quad(_sam_quad_candidates(bgr_s, segmenter), scale, gray.shape, expected, img_area)
+    if best is None:
+        return None
+    return _finish_rect(gray, best, scale, spec)
+
+
+def _best_quad(quads, scale, full_shape, expected, img_area) -> np.ndarray | None:
     best, best_score = None, 0.0
-    for q in _quad_candidates(gray_s, bgr_s):
+    for q in quads:
         q = order_clockwise(q)
-        ratio = metric_aspect(q / scale, gray.shape)
+        ratio = metric_aspect(q / scale, full_shape)
         ratio = max(ratio, 1 / ratio)
         aspect_err = abs(np.log(ratio / expected))
         if aspect_err > 0.1:
@@ -262,11 +328,16 @@ def _detect_rect(gray: np.ndarray, bgr: np.ndarray, spec: ReferenceSpec) -> Dete
         score = np.exp(-(aspect_err / 0.08) ** 2) * (1 - max(cosines)) * np.sqrt(area_frac)
         if score > best_score:
             best, best_score = q, score
-    if best is None:
-        return None
+    return best
 
+
+def _finish_rect(gray: np.ndarray, best: np.ndarray, scale: float, spec: ReferenceSpec) -> DetectedReference:
     coarse = best / scale
-    refined, rms, edge_w = refine_quad(gray, coarse)
+    # Coarse quads can sit several px off the edge (gap-closing fattens outlines): a wide pass to find the edge,
+    # then a tight pass so neighbouring structures (print on the card, desk texture) can't pull the line.
+    refined, rms, edge_w = refine_quad(gray, coarse, reach_frac=0.05)
+    if rms <= 3.0:
+        refined, rms, edge_w = refine_quad(gray, refined)
     if rms > 3.0:
         refined, rms = coarse, 2.0 / scale  # coarse corners are good to ~1 downscaled px
     pts = _orient_to_width(order_clockwise(refined), spec.width_mm, spec.height_mm)
@@ -277,9 +348,11 @@ def _detect_rect(gray: np.ndarray, bgr: np.ndarray, spec: ReferenceSpec) -> Dete
     )
 
 
-def detect_reference(bgr: np.ndarray, spec: ReferenceSpec, *, side: str | None = None) -> DetectedReference:
+def detect_reference(bgr: np.ndarray, spec: ReferenceSpec, *, side: str | None = None,
+                     segmenter=None) -> DetectedReference:
+    """`segmenter` (optional) enables the model-based fallback for faint rectangle references."""
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-    found = _detect_aruco(gray, spec) if spec.kind == "aruco" else _detect_rect(gray, bgr, spec)
+    found = _detect_aruco(gray, spec) if spec.kind == "aruco" else _detect_rect(gray, bgr, spec, segmenter)
     if found is None:
         raise AppError("REF_NOT_FOUND", side=side)
     return found

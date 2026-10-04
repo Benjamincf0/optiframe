@@ -6,7 +6,7 @@ import StepProgress from '../components/StepProgress'
 import BottomBar from '../components/BottomBar'
 import { useCamera } from '../hooks/useCamera'
 import { useSession } from '../context/SessionContext'
-import type { ReferenceSpec, ReferenceType } from '../api/types'
+import type { LensHint, ReferenceSpec, ReferenceType } from '../api/types'
 
 type Eye = 'left' | 'right'
 
@@ -16,6 +16,28 @@ const REF_OPTIONS: { id: ReferenceType; label: string; desc: string }[] = [
   { id: 'aruco', label: 'ArUco marker', desc: 'Custom dictionary' },
   { id: 'custom', label: 'Custom object', desc: 'Enter dimensions' },
 ]
+
+// Placement zones in viewfinder coordinates (0–1 of the 4:3 box). The lens zone is sent to the backend as the
+// segmentation hint, so the user should keep the lens inside it.
+type Zone = { x0: number; y0: number; x1: number; y1: number }
+const VIEW_ASPECT = 4 / 3
+const LENS_ZONE: Zone = { x0: 0.52, y0: 0.12, x1: 0.96, y1: 0.88 }
+const REF_ZONE: Zone = { x0: 0.04, y0: 0.2, x1: 0.48, y1: 0.8 }
+
+/** Map a viewfinder zone to normalised coordinates of the full video frame (the <video> uses object-cover). */
+function zoneToImageHint(zone: Zone, videoW: number, videoH: number): LensHint | null {
+  if (!videoW || !videoH) return null
+  const scale = Math.max(VIEW_ASPECT / videoW, 1 / videoH) // container units per video pixel
+  const offX = (VIEW_ASPECT - videoW * scale) / 2
+  const offY = (1 - videoH * scale) / 2
+  const toX = (x: number) => Math.min(1, Math.max(0, (x * VIEW_ASPECT - offX) / scale / videoW))
+  const toY = (y: number) => Math.min(1, Math.max(0, (y - offY) / scale / videoH))
+  return [toX(zone.x0), toY(zone.y0), toX(zone.x1), toY(zone.y1)]
+}
+
+function zoneStyle(z: Zone): React.CSSProperties {
+  return { left: `${z.x0 * 100}%`, top: `${z.y0 * 100}%`, width: `${(z.x1 - z.x0) * 100}%`, height: `${(z.y1 - z.y0) * 100}%` }
+}
 
 export default function Capture() {
   const navigate = useNavigate()
@@ -31,6 +53,7 @@ export default function Capture() {
     left: null,
     right: null,
   })
+  const [hints, setHints] = useState<{ left: LensHint | null; right: LensHint | null }>({ left: null, right: null })
   const [previews, setPreviews] = useState<{ left: string | null; right: string | null }>({
     left: null,
     right: null,
@@ -48,16 +71,18 @@ export default function Capture() {
   }, [showUpload]) // eslint-disable-line
 
   function handleCapture() {
+    const video = videoRef.current
     const file = captureFrame()
-    if (!file) return
-    storeCapture(file)
+    if (!file || !video) return
+    storeCapture(file, zoneToImageHint(LENS_ZONE, video.videoWidth, video.videoHeight))
   }
 
-  function storeCapture(file: File) {
+  function storeCapture(file: File, hint: LensHint | null) {
     // Warn if image seems compressed / small
     setLowRes(file.size < 200_000)
     const url = URL.createObjectURL(file)
     setCaptured(prev => ({ ...prev, [activeEye]: file }))
+    setHints(prev => ({ ...prev, [activeEye]: hint }))
     setPreviews(prev => ({ ...prev, [activeEye]: url }))
     if (activeEye === 'left') setActiveEye('right')
   }
@@ -65,13 +90,14 @@ export default function Capture() {
   function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     if (!file) return
-    storeCapture(file)
+    storeCapture(file, null) // uploaded photos have no placement zone; the backend searches the whole image
     if (e.target) e.target.value = ''
   }
 
   function retake(eye: Eye) {
     if (previews[eye]) URL.revokeObjectURL(previews[eye]!)
     setCaptured(prev => ({ ...prev, [eye]: null }))
+    setHints(prev => ({ ...prev, [eye]: null }))
     setPreviews(prev => ({ ...prev, [eye]: null }))
     setActiveEye(eye)
   }
@@ -85,7 +111,14 @@ export default function Capture() {
 
   function proceed() {
     if (!captured.left || !captured.right) return
-    dispatch({ type: 'SET_CAPTURES', left: captured.left, right: captured.right, reference: buildReference() })
+    dispatch({
+      type: 'SET_CAPTURES',
+      left: captured.left,
+      right: captured.right,
+      leftHint: hints.left,
+      rightHint: hints.right,
+      reference: buildReference(),
+    })
     navigate('/processing')
   }
 
@@ -195,43 +228,60 @@ export default function Capture() {
           </div>
 
           <div className="aspect-[4/3] rounded-2xl overflow-hidden bg-zinc-100 border border-zinc-200 relative">
-            {/* Camera preview */}
-            {!showUpload && !preview && (
+            {/*
+              The video element is ALWAYS in the DOM — never conditionally rendered.
+              Removing it from the tree nulls out videoRef during the getUserMedia await,
+              which is the race condition that causes "Could not access camera" despite
+              the stream being acquired successfully.
+              Visibility is controlled with CSS classes instead.
+            */}
+            <video
+              ref={videoRef}
+              autoPlay
+              playsInline
+              muted
+              className={`absolute inset-0 w-full h-full object-cover transition-opacity ${
+                !showUpload && !preview ? 'opacity-100' : 'opacity-0 pointer-events-none'
+              }`}
+            />
+
+            {/* Placement zones (FR-CAP-04) — shown while live camera is active. The lens zone is sent to the
+                backend as the segmentation hint. An A4 sheet fills the frame, so it gets no zone of its own. */}
+            {!showUpload && !preview && !cameraError && (
               <>
-                <video
-                  ref={videoRef}
-                  autoPlay
-                  playsInline
-                  muted
-                  className="absolute inset-0 w-full h-full object-cover"
-                />
-                {/* Corner guides */}
-                {['top-left', 'top-right', 'bottom-left', 'bottom-right'].map(pos => (
+                {refType !== 'a4' && (
                   <div
-                    key={pos}
-                    className={`absolute w-8 h-8 ${
-                      pos.includes('top') ? 'top-4' : 'bottom-4'
-                    } ${pos.includes('left') ? 'left-4' : 'right-4'} ${
-                      pos === 'top-left' ? 'border-t-2 border-l-2 rounded-tl-lg' :
-                      pos === 'top-right' ? 'border-t-2 border-r-2 rounded-tr-lg' :
-                      pos === 'bottom-left' ? 'border-b-2 border-l-2 rounded-bl-lg' :
-                      'border-b-2 border-r-2 rounded-br-lg'
-                    } border-white/70`}
-                  />
-                ))}
-                {cameraError && (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-zinc-100 px-6 text-center gap-2">
-                    <AlertTriangle size={24} className="text-amber-500" />
-                    <p className="text-sm text-zinc-600">{cameraError}</p>
-                    <button
-                      onClick={() => setShowUpload(true)}
-                      className="mt-1 text-sm font-semibold text-zinc-900 underline underline-offset-2"
-                    >
-                      Upload a photo instead
-                    </button>
+                    className="absolute border-2 border-dashed border-white/70 rounded-xl pointer-events-none"
+                    style={zoneStyle(REF_ZONE)}
+                  >
+                    <span className="absolute top-1.5 left-2 text-[11px] font-semibold text-white drop-shadow">
+                      {selectedRef.label}
+                    </span>
                   </div>
                 )}
+                <div
+                  className="absolute border-2 border-dashed border-white rounded-[40%] pointer-events-none"
+                  style={zoneStyle(LENS_ZONE)}
+                >
+                  <span className="absolute top-1.5 left-1/2 -translate-x-1/2 whitespace-nowrap text-[11px] font-semibold text-white drop-shadow">
+                    {activeEye === 'left' ? 'Left' : 'Right'} lens · convex side up
+                  </span>
+                </div>
               </>
+            )}
+
+            {/* Camera error overlay */}
+            {cameraError && !showUpload && !preview && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center bg-zinc-100 px-6 text-center gap-2">
+                <AlertTriangle size={24} className="text-amber-500" />
+                <p className="text-sm text-zinc-600">{cameraError}</p>
+                <button
+                  onClick={() => setShowUpload(true)}
+                  className="mt-1 text-sm font-semibold text-zinc-900 underline underline-offset-2"
+                >
+                  Upload a photo instead
+                </button>
+              </div>
             )}
 
             {/* Photo preview after capture */}

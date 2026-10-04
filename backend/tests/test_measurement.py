@@ -157,3 +157,58 @@ def test_camera_jpeg_not_flagged():
     buf = io.BytesIO()
     img.save(buf, "JPEG", quality=92, exif=exif.tobytes())
     assert load_image(buf.getvalue(), side="left", max_pixels=40_000_000).warnings == []
+
+
+# ---------------------------------------------------------------------------- real-world robustness regressions
+# Each of these returned 422 (or crashed) before: brightness-relative edge thresholds lost cards and lenses on light
+# desks, broken low-contrast card outlines never closed, and the edge snap jumped to shadows.
+
+LIGHT_DESK = [
+    dict(light_table=True),  # pastel card + clear lens on a white desk
+    dict(light_table=True, card_color=(240, 240, 240)),  # white card on a white desk
+    dict(light_table=True, card_color=(160, 90, 40)),
+]
+
+
+@pytest.mark.parametrize("seed", [50, 52])
+@pytest.mark.parametrize("kw", LIGHT_DESK, ids=["pastel_card", "white_card", "blue_card"])
+def test_light_desk_without_hint(segmenter, seed, kw):
+    scene = render(seed, tilt_deg=8, **kw)
+    r = _measure(scene, CARD, segmenter, use_hint=False).result
+    assert abs(r["A"] - scene.A) < TOLERANCE_MM and abs(r["B"] - scene.B) < TOLERANCE_MM
+
+
+def test_faint_lens_is_flagged_and_uncertainty_is_honest(segmenter):
+    scene = render(51, tilt_deg=8, ring_strength=0.2)
+    m = _measure(scene, CARD, segmenter, use_hint=False)
+    assert "FAINT_EDGE" in [w["code"] for w in m.warnings]
+    err = max(abs(m.result["A"] - scene.A), abs(m.result["B"] - scene.B))
+    assert m.result["accuracy_mm"] >= 0.8 and err < 2 * m.result["accuracy_mm"]
+
+
+def test_clear_lens_has_no_faint_edge_warning(segmenter):
+    m = _measure(render(50, tilt_deg=8), CARD, segmenter, use_hint=False)
+    assert "FAINT_EDGE" not in [w["code"] for w in m.warnings]
+
+
+def test_capture_zone_sized_hint(segmenter):
+    """The frontend sends its whole lens placement zone (right ~45 % of the frame), not a tight box."""
+    scene = render(60, tilt_deg=10)
+    m = measure_lens(encode(scene.image), CARD, (0.52, 0.12, 0.96, 0.88), "left", segmenter, max_pixels=40_000_000)
+    assert abs(m.result["A"] - scene.A) < TOLERANCE_MM and abs(m.result["B"] - scene.B) < TOLERANCE_MM
+
+
+@pytest.mark.xfail(reason="card corner refinement fails on this scene (coarse quad ~4% too large); open issue")
+def test_hint_without_lens_falls_back_to_full_search(segmenter):
+    scene = render(61, tilt_deg=10)
+    m = measure_lens(encode(scene.image), CARD, (0.04, 0.2, 0.48, 0.8), "left", segmenter, max_pixels=40_000_000)
+    assert abs(m.result["A"] - scene.A) < TOLERANCE_MM and abs(m.result["B"] - scene.B) < TOLERANCE_MM
+
+
+def test_noise_image_is_a_clean_error_not_a_crash(segmenter):
+    rng = np.random.default_rng(0)
+    img = rng.integers(0, 255, (900, 1200, 3), dtype=np.uint8)
+    img[::7] = 255  # thin structures produce degenerate (< 4 point) hulls
+    with pytest.raises(AppError) as e:
+        measure_lens(encode(img), CARD, None, "left", segmenter, max_pixels=40_000_000)
+    assert e.value.code in {"REF_NOT_FOUND", "LENS_NOT_FOUND"}

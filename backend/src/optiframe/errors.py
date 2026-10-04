@@ -84,16 +84,20 @@ _HTTP_CODES = {404: "NOT_FOUND", 405: "METHOD_NOT_ALLOWED", 413: "PAYLOAD_TOO_LA
 
 def install_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppError)
-    async def _app_error(_: Request, exc: AppError):
+    async def _app_error(request: Request, exc: AppError):
+        log.warning("%s %s -> %d %s%s %s%s", request.method, request.url.path, exc.status, exc.code,
+                    f" side={exc.side}" if exc.side else "", exc.message,
+                    f" details={exc.details}" if exc.details else "")
         return JSONResponse(error_body(exc.code, exc.message, exc.side, exc.details), status_code=exc.status)
 
     @app.exception_handler(RequestValidationError)
-    async def _validation(_: Request, exc: RequestValidationError):
+    async def _validation(request: Request, exc: RequestValidationError):
         fields = [
             {"field": ".".join(str(p) for p in e.get("loc", ()) if p not in ("body",)), "message": e.get("msg", "")}
             for e in exc.errors()
         ]
         code, (status, message) = "VALIDATION_ERROR", ERRORS["VALIDATION_ERROR"]
+        log.warning("%s %s -> %d %s fields=%s", request.method, request.url.path, status, code, fields)
         return JSONResponse(error_body(code, message, details={"fields": fields}), status_code=status)
 
     @app.exception_handler(StarletteHTTPException)

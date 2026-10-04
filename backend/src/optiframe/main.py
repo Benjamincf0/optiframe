@@ -20,8 +20,19 @@ from optiframe.ratelimit import RateLimiter
 log = logging.getLogger("optiframe")
 
 
+def _configure_logging() -> None:
+    """Make the app's own log lines (error codes, console emails) visible next to uvicorn's."""
+    if not log.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(levelname)s:     [optiframe] %(message)s"))
+        log.addHandler(handler)
+        log.setLevel(logging.INFO)
+        log.propagate = False
+
+
 def create_app(settings: Settings | None = None, *, load_model: bool = True) -> FastAPI:
     settings = settings or get_settings()
+    _configure_logging()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):

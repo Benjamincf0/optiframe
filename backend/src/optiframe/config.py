@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     storage_dir: Path = BACKEND_ROOT / "storage"
     model_path: Path = BACKEND_ROOT / "models" / "efficientsam_ti.onnx"
 
+    # Dev only: save lens photos that fail measurement here (with the error code in the filename) to debug them.
+    debug_dump_dir: Path | None = None
+
     # Compute limits
     max_image_bytes: int = 15 * 1024 * 1024
     max_image_pixels: int = 40_000_000
@@ -62,6 +65,8 @@ class Settings(BaseSettings):
     def _check_prod(self) -> "Settings":
         if self.env == "prod" and (self.secret_key == DEV_SECRET or len(self.secret_key) < 32):
             raise ValueError("OPTIFRAME_SECRET_KEY must be set to a random value of 32+ chars in prod")
+        if self.env == "prod" and self.debug_dump_dir is not None:
+            raise ValueError("OPTIFRAME_DEBUG_DUMP_DIR must not be set in prod (it stores user photos)")
         return self
 
 

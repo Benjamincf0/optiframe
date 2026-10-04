@@ -34,12 +34,15 @@ class Scene:
     reference: dict
 
 
-def _table(rng: np.random.Generator, shape) -> np.ndarray:
+def _table(rng: np.random.Generator, shape, light: bool = False) -> np.ndarray:
     h, w = shape
-    base = np.array(rng.uniform([90, 110, 140], [140, 160, 200]), np.float32)  # warm wood-ish BGR
+    if light:  # white desk / paper-like surface: the hard case for a white card and a clear lens
+        base = np.array(rng.uniform([215, 215, 215], [235, 235, 235]), np.float32)
+    else:
+        base = np.array(rng.uniform([90, 110, 140], [140, 160, 200]), np.float32)  # warm wood-ish BGR
     low = cv2.resize(rng.normal(0, 1, (h // 80 + 2, w // 80 + 2)).astype(np.float32), (w, h), interpolation=cv2.INTER_CUBIC)
     grain = cv2.GaussianBlur(rng.normal(0, 1, (h, w)).astype(np.float32), (0, 0), sigmaX=25, sigmaY=1.5)
-    tex = 14 * low + 30 * grain
+    tex = (4 * low + 6 * grain) if light else (14 * low + 30 * grain)
     img = base[None, None, :] + tex[:, :, None]
     return np.clip(img, 0, 255)
 
@@ -62,17 +65,19 @@ def _rounded_rect(cx, cy, w, h, r, angle_deg, n=24) -> np.ndarray:
 
 def render(seed: int = 0, *, ref: str = "credit_card", lens_a: float = 52.0, lens_b: float = 38.0,
            tilt_deg: float = 12.0, card_angle: float = 8.0, blur: float = 0.8, noise: float = 3.0,
-           jpeg_quality: int = 90, image_size=(2400, 1800), px_per_mm_target: float = 7.0) -> Scene:
+           jpeg_quality: int = 90, image_size=(2400, 1800), px_per_mm_target: float = 7.0,
+           light_table: bool = False, ring_strength: float = 0.55, card_color=None,
+           lens_offset_mm=(55.0, 0.0)) -> Scene:
     rng = np.random.default_rng(seed)
     W, H = CANVAS_MM
     cw, ch = int(W * CANVAS_SCALE), int(H * CANVAS_SCALE)
-    canvas = _table(rng, (ch, cw))
+    canvas = _table(rng, (ch, cw), light=light_table)
 
     # --- reference object (left part of the canvas)
     ref_center = np.array([W / 2 - 60, H / 2 + rng.uniform(-10, 10)])
     if ref == "credit_card":
         poly = _rounded_rect(*ref_center, 85.60, 53.98, 3.18, card_angle)
-        color = np.array(rng.uniform([200, 200, 200], [245, 245, 245]))
+        color = np.array(card_color if card_color is not None else rng.uniform([200, 200, 200], [245, 245, 245]))
         cv2.fillPoly(canvas, [np.round(_to_px(poly) * 16).astype(np.int32)], color.tolist(), cv2.LINE_AA, shift=4)
         # card clutter: stripe + "text"
         th = np.radians(card_angle)
@@ -102,7 +107,7 @@ def render(seed: int = 0, *, ref: str = "credit_card", lens_a: float = 52.0, len
 
     # --- lens (right part). Front-view shape (y up) → canvas (y down).
     shape = lens_shape(lens_a, lens_b, n=rng.uniform(2.2, 3.4), taper=rng.uniform(-0.1, 0.1))
-    lens_center = np.array([W / 2 + 55, H / 2 + rng.uniform(-8, 8)])
+    lens_center = np.array([W / 2 + lens_offset_mm[0], H / 2 + lens_offset_mm[1] + rng.uniform(-8, 8)])
     lens_canvas = np.stack([shape[:, 0], -shape[:, 1]], axis=1) + lens_center
     A = float(np.ptp(shape[:, 0]))
     B = float(np.ptp(shape[:, 1]))
@@ -120,10 +125,10 @@ def render(seed: int = 0, *, ref: str = "credit_card", lens_a: float = 52.0, len
     ring_w = int(1.2 * CANVAS_SCALE)
     eroded = cv2.erode(inside, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * ring_w + 1, 2 * ring_w + 1)))
     ring = cv2.GaussianBlur(((inside > 127) & (eroded < 128)).astype(np.float32), (0, 0), 2.0)
-    lens_img = lens_img * (1 - 0.55 * ring[:, :, None])
+    lens_img = lens_img * (1 - ring_strength * ring[:, :, None])
     inner = cv2.erode(eroded, np.ones((3, 3), np.uint8))
     line = cv2.GaussianBlur(((eroded > 127) & (inner < 128)).astype(np.float32), (0, 0), 1.5)
-    lens_img = lens_img + 70 * line[:, :, None]
+    lens_img = lens_img + 70 * (ring_strength / 0.55) * line[:, :, None]
     # specular highlight
     hl = np.zeros((ch, cw), np.float32)
     hc = lc + _to_px(np.array([-lens_a * 0.18, -lens_b * 0.15]))
@@ -131,9 +136,10 @@ def render(seed: int = 0, *, ref: str = "credit_card", lens_a: float = 52.0, len
     hl = cv2.GaussianBlur(hl, (0, 0), 25) * inside_f
     lens_img = lens_img + 120 * hl[:, :, None]
     canvas = canvas * (1 - inside_f[:, :, None]) + lens_img * inside_f[:, :, None]
-    # soft contact shadow just outside the lens
-    outer = cv2.dilate(inside, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15)))
-    shadow = cv2.GaussianBlur(((outer > 127) & (inside < 128)).astype(np.float32), (0, 0), 4) * 0.25
+    # soft directional shadow (light from the upper left): offset copy of the lens, visible outside it
+    off = int(round(1.5 * CANVAS_SCALE))
+    shifted = np.roll(np.roll(inside, off, axis=0), off, axis=1)
+    shadow = cv2.GaussianBlur(((shifted > 127) & (inside < 128)).astype(np.float32), (0, 0), 6) * 0.25
     canvas = canvas * (1 - shadow[:, :, None])
     canvas = np.clip(canvas, 0, 255).astype(np.uint8)
 

@@ -1,5 +1,5 @@
 import { createContext, useContext, useReducer, type ReactNode } from 'react'
-import type { MeasureResponse, Pattern, Material, STLHeaders, ReferenceSpec } from '../api/types'
+import type { MeasureResponse, Pattern, Material, STLHeaders, ReferenceSpec, LensHint } from '../api/types'
 
 export interface FrameParams {
   bridgeMm: number
@@ -20,6 +20,9 @@ interface SessionState {
   // Step 1: Capture
   leftFile: File | null
   rightFile: File | null
+  /** Lens placement zone per photo (null for uploaded files, where the backend searches the whole photo) */
+  leftHint: LensHint | null
+  rightHint: LensHint | null
   reference: ReferenceSpec
 
   // Step 2: Measurements (from backend)
@@ -42,7 +45,14 @@ interface SessionState {
 }
 
 type Action =
-  | { type: 'SET_CAPTURES'; left: File; right: File; reference: ReferenceSpec }
+  | {
+      type: 'SET_CAPTURES'
+      left: File
+      right: File
+      leftHint: LensHint | null
+      rightHint: LensHint | null
+      reference: ReferenceSpec
+    }
   | { type: 'SET_MEASUREMENTS'; measurements: MeasureResponse }
   | { type: 'SET_PD'; pdMm: number; bridgeMm: number }
   | { type: 'SET_CUSTOMIZE'; customize: Partial<CustomizeState> }
@@ -61,6 +71,8 @@ const DEFAULT_CUSTOMIZE: CustomizeState = {
 const INITIAL: SessionState = {
   leftFile: null,
   rightFile: null,
+  leftHint: null,
+  rightHint: null,
   reference: { type: 'credit_card' },
   measurements: null,
   pdMm: null,
@@ -75,7 +87,15 @@ const INITIAL: SessionState = {
 function reducer(state: SessionState, action: Action): SessionState {
   switch (action.type) {
     case 'SET_CAPTURES':
-      return { ...state, leftFile: action.left, rightFile: action.right, reference: action.reference }
+      return {
+        ...state,
+        leftFile: action.left,
+        rightFile: action.right,
+        leftHint: action.leftHint,
+        rightHint: action.rightHint,
+        reference: action.reference,
+        measurements: null,
+      }
     case 'SET_MEASUREMENTS':
       return { ...state, measurements: action.measurements }
     case 'SET_PD':

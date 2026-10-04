@@ -34,6 +34,13 @@ class Segmenter:
         self.session = ort.InferenceSession(str(model_path), opts, providers=["CPUExecutionProvider"])
 
     def predict_box(self, bgr: np.ndarray, box: tuple[float, float, float, float]) -> list[MaskCandidate]:
+        return self.predict(bgr, [(box[0], box[1]), (box[2], box[3])], [2, 3])
+
+    def predict_point(self, bgr: np.ndarray, point: tuple[float, float]) -> list[MaskCandidate]:
+        return self.predict(bgr, [point], [1])
+
+    def predict(self, bgr: np.ndarray, points: list[tuple[float, float]], point_labels: list[int]
+                ) -> list[MaskCandidate]:
         h, w = bgr.shape[:2]
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         resized = cv2.resize(rgb, (INPUT_SIZE, INPUT_SIZE), interpolation=cv2.INTER_AREA)
@@ -41,9 +48,9 @@ class Segmenter:
         sx, sy = INPUT_SIZE / w, INPUT_SIZE / h
         coords = np.zeros((1, 1, MAX_POINTS, 2), np.float32)
         labels = np.full((1, 1, MAX_POINTS), -1, np.float32)
-        coords[0, 0, 0] = [box[0] * sx, box[1] * sy]
-        coords[0, 0, 1] = [box[2] * sx, box[3] * sy]
-        labels[0, 0, :2] = [2, 3]
+        for i, ((x, y), lab) in enumerate(zip(points, point_labels, strict=True)):
+            coords[0, 0, i] = [x * sx, y * sy]
+            labels[0, 0, i] = lab
         masks, ious = self.session.run(None, {
             "batched_images": image, "batched_point_coords": coords, "batched_point_labels": labels,
         })

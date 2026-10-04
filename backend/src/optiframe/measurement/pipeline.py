@@ -24,6 +24,13 @@ CROP_MARGIN_MM = 8.0
 PREVIEW_MARGIN_MM = 5.0
 PREVIEW_MAX_SIDE = 1200
 CONTOUR_POINTS = 360
+MIN_SOLIDITY = 0.92  # lenses are convex or nearly so; texture/shadow blobs aren't
+# Mask score = predicted IoU × solidity⁴. On test scenes real lenses score 0.88–0.94 (solidity ≈ 1.0); desk-texture
+# blobs score ≤ 0.70 (IoU ≈ 0.82, solidity 0.93–0.96).
+MIN_MASK_SCORE = 0.75  # below this nothing lens-like was found
+GOOD_MASK_SCORE = 0.85  # stop trying further candidates once a mask is this convincing
+FAINT_EDGE_SUPPORT_OK = 0.9  # fraction of contour points with a sharp edge on a clearly visible lens (≈1.0)
+FAINT_EDGE_WARN = 0.75
 
 
 @dataclass
@@ -55,10 +62,62 @@ def _choose_mask(cands, box_px, crop_shape, scale) -> tuple[np.ndarray, float] |
         box_iou = inter / max(union, 1)
         if box_iou < 0.6:
             continue
-        score = cand.iou * box_iou
+        contour = C.mask_contour(m).astype(np.float32)
+        solidity = cv2.contourArea(contour) / max(cv2.contourArea(cv2.convexHull(contour)), 1.0)
+        if solidity < MIN_SOLIDITY:
+            continue
+        score = cand.iou * solidity ** 4
         if score > best_score:
             best, best_score = m, score
     return (best, best_score) if best is not None else None
+
+
+def _crop_for(bgr: np.ndarray, plane, box) -> tuple:
+    bx0, by0, bx1, by1 = box
+    crop = warp_region(bgr, plane, (bx0 - CROP_MARGIN_MM, by0 - CROP_MARGIN_MM,
+                                    bx1 + CROP_MARGIN_MM, by1 + CROP_MARGIN_MM), output_scale(plane))
+    box_px = tuple(crop.mm_to_px(np.array([[bx0, by0], [bx1, by1]])).ravel())
+    return crop, box_px
+
+
+def _segment(segmenter: Segmenter, crop, box_px, pad_mm: float) -> tuple[np.ndarray, float] | None:
+    p = pad_mm * crop.scale
+    prompt = (box_px[0] - p, box_px[1] - p, box_px[2] + p, box_px[3] + p)
+    return _choose_mask(segmenter.predict_box(crop.image, prompt), box_px, crop.image.shape[:2], crop.scale)
+
+
+GROW_TOUCH_MM = 0.75  # a mask this close to its prompt box edge was cut off by the box
+GROW_STEP_MM = 4.0
+GROW_ITERATIONS = 2
+
+
+def _segment_grow(segmenter: Segmenter, bgr: np.ndarray, plane, box, pad_mm: float):
+    """Segment a candidate; if the mask is clipped by its prompt box (proposal too small), widen and retry."""
+    crop, box_px = _crop_for(bgr, plane, box)
+    chosen = _segment(segmenter, crop, box_px, pad_mm)
+    for _ in range(GROW_ITERATIONS):
+        if chosen is None:
+            break
+        ys, xs = np.nonzero(chosen[0])
+        m_mm = crop.px_to_mm(np.array([[xs.min(), ys.min()], [xs.max(), ys.max()]], dtype=np.float64))
+        lo, hi = m_mm[0], m_mm[1]
+        p0 = np.array(box[:2]) - pad_mm
+        p1 = np.array(box[2:]) + pad_mm
+        touch_lo = lo - p0 < GROW_TOUCH_MM
+        touch_hi = p1 - hi < GROW_TOUCH_MM
+        if not (touch_lo.any() or touch_hi.any()):
+            break
+        new_lo = np.where(touch_lo, lo - GROW_STEP_MM, np.minimum(box[:2], lo))
+        new_hi = np.where(touch_hi, hi + GROW_STEP_MM, np.maximum(box[2:], hi))
+        if (new_hi - new_lo).max() > LENS_MAX_MM + 10:
+            break  # growing without bound: not a lens
+        box = (float(new_lo[0]), float(new_lo[1]), float(new_hi[0]), float(new_hi[1]))
+        crop, box_px = _crop_for(bgr, plane, box)
+        grown = _segment(segmenter, crop, box_px, pad_mm)
+        if grown is None:
+            break
+        chosen = grown
+    return crop, box_px, chosen
 
 
 def _encode_jpeg(img: np.ndarray) -> str:
@@ -75,7 +134,7 @@ def measure_lens(data: bytes, ref_spec: ReferenceSpec, hint: tuple[float, float,
     bgr = loaded.bgr
     h_img, w_img = bgr.shape[:2]
 
-    ref = detect_reference(bgr, ref_spec, side=side)
+    ref = detect_reference(bgr, ref_spec, side=side, segmenter=segmenter)
     plane = build_plane(ref, (h_img, w_img))
     if plane.tilt_deg > MAX_TILT_DEG:
         raise AppError("ANGLE_TOO_STEEP", side=side, details={"tilt_deg": round(plane.tilt_deg, 1)})
@@ -89,28 +148,26 @@ def measure_lens(data: bytes, ref_spec: ReferenceSpec, hint: tuple[float, float,
         pm = plane.to_mm(corners)
         hint_mm = (pm[:, 0].min(), pm[:, 1].min(), pm[:, 0].max(), pm[:, 1].max())
 
-    box = locate_lens(bgr, plane, hint_mm)
-    if box is None:
-        raise AppError("LENS_NOT_FOUND", side=side)
-
-    scale = output_scale(plane)
-    bx0, by0, bx1, by1 = box
-    crop = warp_region(bgr, plane, (bx0 - CROP_MARGIN_MM, by0 - CROP_MARGIN_MM,
-                                    bx1 + CROP_MARGIN_MM, by1 + CROP_MARGIN_MM), scale)
-    scale = crop.scale
-    box_px = tuple(crop.mm_to_px(np.array([[bx0, by0], [bx1, by1]])).ravel())
-
-    # Segmentation runs with slightly different box prompts; their disagreement measures uncertainty.
+    # Candidate boxes are proposals; the segmentation model decides which one actually contains a lens.
     pads_mm = [1.5, 3.0, 0.5, 4.5][:segmentation_runs]
-    masks = []
-    for pad in pads_mm:
-        p = pad * scale
-        prompt = (box_px[0] - p, box_px[1] - p, box_px[2] + p, box_px[3] + p)
-        chosen = _choose_mask(segmenter.predict_box(crop.image, prompt), box_px, crop.image.shape[:2], scale)
+    best = None
+    for box in locate_lens(bgr, plane, hint_mm):
+        crop, box_px, chosen = _segment_grow(segmenter, bgr, plane, box, pads_mm[0])
+        if chosen is not None and (best is None or chosen[1] > best[2][1]):
+            best = (crop, box_px, chosen)
+        if best is not None and best[2][1] >= GOOD_MASK_SCORE:
+            break
+    if best is None or best[2][1] < MIN_MASK_SCORE:
+        raise AppError("LENS_NOT_FOUND", side=side)
+    crop, box_px, first = best
+    scale = crop.scale
+
+    # Further runs with slightly different box prompts; their disagreement measures uncertainty.
+    masks = [first]
+    for pad in pads_mm[1:]:
+        chosen = _segment(segmenter, crop, box_px, pad)
         if chosen is not None:
             masks.append(chosen)
-    if not masks:
-        raise AppError("LENS_NOT_FOUND", side=side)
     masks.sort(key=lambda m: m[1], reverse=True)
     mask = masks[0][0]
     seg_unc = (max(C.mean_boundary_distance_mm(mask, m, scale) for m, _ in masks[1:])
@@ -131,8 +188,11 @@ def measure_lens(data: bytes, ref_spec: ReferenceSpec, hint: tuple[float, float,
     blur_term = 0.15 * (plane.edge_width_mm or 0.5)
     tilt_term = 0.01 * plane.tilt_deg  # residual parallax / focal-length model error grows with tilt
     res_term = 1.0 / plane.src_px_per_mm  # ~1 source pixel of edge localisation
+    # Few sharp edge points = the lens outline is barely visible; synthetic tests show ~1 mm errors at support ≈ 0.55.
+    edge_term = 3.0 * max(0.0, FAINT_EDGE_SUPPORT_OK - edge_support)
     seg_term = np.sqrt(2) * seg_unc * (1.0 if edge_support > 0.6 else 1.5)
-    accuracy = float(np.sqrt(scale_term ** 2 + blur_term ** 2 + tilt_term ** 2 + res_term ** 2 + seg_term ** 2 + 0.25 ** 2))
+    accuracy = float(np.sqrt(scale_term ** 2 + blur_term ** 2 + tilt_term ** 2 + res_term ** 2 + seg_term ** 2 +
+                              edge_term ** 2 + 0.25 ** 2))
     accuracy = max(0.3, round(accuracy, 1))
     confidence = round(1.0 / (1.0 + (accuracy / 0.6) ** 2), 2)
 
@@ -157,4 +217,11 @@ def measure_lens(data: bytes, ref_spec: ReferenceSpec, hint: tuple[float, float,
         "rectified_image": _encode_jpeg(preview.image),
         "rectified_origin_mm": [round(float(centre_mm[0] - px0), 3), round(float(centre_mm[1] - py0), 3)],
     }
-    return LensMeasurement(result=result, warnings=loaded.warnings)
+    warnings = list(loaded.warnings)
+    if edge_support < FAINT_EDGE_WARN:
+        warnings.append({
+            "code": "FAINT_EDGE", "side": side,
+            "message": "The lens edge is hard to see in this photo, so the measurement is less accurate. "
+                       "Retake it on a plain, dark surface with soft, even light.",
+        })
+    return LensMeasurement(result=result, warnings=warnings)
