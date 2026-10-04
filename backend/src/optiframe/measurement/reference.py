@@ -309,9 +309,21 @@ def _detect_rect(gray: np.ndarray, bgr: np.ndarray, spec: ReferenceSpec, segment
 
 
 def _best_quad(quads, scale, full_shape, expected, img_area) -> np.ndarray | None:
+    ordered = [order_clockwise(q) for q in quads]
+
+    def bbox_iou(a: np.ndarray, b: np.ndarray) -> float:
+        ax0, ay0 = a.min(axis=0)
+        ax1, ay1 = a.max(axis=0)
+        bx0, by0 = b.min(axis=0)
+        bx1, by1 = b.max(axis=0)
+        inter = max(0.0, min(ax1, bx1) - max(ax0, bx0)) * max(0.0, min(ay1, by1) - max(ay0, by0))
+        area_a = (ax1 - ax0) * (ay1 - ay0)
+        area_b = (bx1 - bx0) * (by1 - by0)
+        union = area_a + area_b - inter
+        return inter / union if union > 0 else 0.0
+
     best, best_score = None, 0.0
-    for q in quads:
-        q = order_clockwise(q)
+    for q in ordered:
         ratio = metric_aspect(q / scale, full_shape)
         ratio = max(ratio, 1 / ratio)
         aspect_err = abs(np.log(ratio / expected))
@@ -325,7 +337,12 @@ def _best_quad(quads, scale, full_shape, expected, img_area) -> np.ndarray | Non
         if max(cosines) > 0.5:
             continue
         area_frac = cv2.contourArea(q.astype(np.float32)) / img_area
-        score = np.exp(-(aspect_err / 0.08) ** 2) * (1 - max(cosines)) * np.sqrt(area_frac)
+        # Prefer a rectangle supported by several independent edge/color passes.
+        # In busy photos, a card-plus-lens boundary can mimic the card's aspect
+        # ratio and be larger; the actual card produces a tight cluster of
+        # nearly identical proposals.
+        votes = sum(bbox_iou(q, other) >= 0.8 for other in ordered)
+        score = np.exp(-(aspect_err / 0.08) ** 2) * (1 - max(cosines)) * np.sqrt(area_frac * votes)
         if score > best_score:
             best, best_score = q, score
     return best
