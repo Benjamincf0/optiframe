@@ -82,7 +82,20 @@ def locate_lens(bgr: np.ndarray, plane: Plane, hint_mm: Box | None) -> list[Box]
     the hint come first, followed by whole-photo candidates (the lens may not be where the user was told to put it).
     """
     if hint_mm is None:
-        return _locate(bgr, plane, None)
+        # Circle detection is deliberately only a *proposal* fallback for very
+        # faint, round lenses.  EfficientSAM still verifies the result below in
+        # the pipeline, so this does not turn classical edge detection into the
+        # measuring algorithm.
+        edges = _locate(bgr, plane, None)
+        circles = _circle_candidates(bgr, plane)
+        # Preserve the established contour proposals first.  The Hough path is
+        # a fallback: on textured scenes it can return plausible circles that
+        # are unrelated to the lens.
+        out = edges[:]
+        for box in circles:
+            if all(_box_iou(box, existing) < 0.5 for existing in out):
+                out.append(box)
+        return out[:MAX_CANDIDATES]
     out = _locate(bgr, plane, hint_mm)[:2]  # leave room for whole-photo candidates
     for box in _locate(bgr, plane, None):
         if all(_box_iou(box, o) < 0.5 for o in out):
@@ -91,6 +104,51 @@ def locate_lens(bgr: np.ndarray, plane: Plane, hint_mm: Box | None) -> list[Box]
     if LENS_MIN_MM <= hx1 - hx0 <= LENS_MAX_MM + 20 and LENS_MIN_MM * 0.6 <= hy1 - hy0 <= LENS_MAX_MM + 20:
         out.append(hint_mm)
     return out[:MAX_CANDIDATES]
+
+
+def _circle_candidates(bgr: np.ndarray, plane: Plane) -> list[Box]:
+    """Return plausible circular-lens boxes as prompts for the segmenter.
+
+    Clear lenses on a pale surface can have an outline too weak for the normal
+    closed-contour locator, while still forming a stable Hough circle.  This is
+    intentionally conservative and only supplies boxes; mask scoring remains
+    responsible for accepting a lens.
+    """
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    h, w = gray.shape
+    scale = min(1.0, 1600.0 / max(h, w))
+    if scale < 1.0:
+        gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    small_h, small_w = gray.shape
+    radius_min = max(20, int(min(small_h, small_w) * 0.10))
+    radius_max = int(min(small_h, small_w) * 0.48)
+    if radius_max <= radius_min:
+        return []
+    circles = cv2.HoughCircles(cv2.medianBlur(gray, 5), cv2.HOUGH_GRADIENT, 1.2,
+                               minDist=max(40, int(min(small_h, small_w) * 0.20)),
+                               param1=100, param2=30, minRadius=radius_min, maxRadius=radius_max)
+    if circles is None:
+        return []
+    out: list[Box] = []
+    ref = plane.ref_polygon_mm
+    for cx, cy, radius in circles[0]:
+        corners_px = np.array([[cx - radius, cy - radius], [cx + radius, cy + radius]], dtype=np.float64) / scale
+        metric = plane.to_mm(corners_px)
+        box = (float(metric[:, 0].min()), float(metric[:, 1].min()),
+               float(metric[:, 0].max()), float(metric[:, 1].max()))
+        width, height = box[2] - box[0], box[3] - box[1]
+        if not (LENS_MIN_MM * 0.8 <= width <= LENS_MAX_MM and LENS_MIN_MM * 0.6 <= height <= LENS_MAX_MM):
+            continue
+        # A card's rounded corners can also produce a circle; never prompt the
+        # segmenter with a circle centred on the reference itself.
+        centre = np.array([[(box[0] + box[2]) / 2, (box[1] + box[3]) / 2]], dtype=np.float32)
+        if cv2.pointPolygonTest(ref.astype(np.float32), tuple(centre[0]), False) >= 0:
+            continue
+        if all(_box_iou(box, existing) < 0.5 for existing in out):
+            out.append(box)
+        if len(out) == MAX_CANDIDATES:
+            break
+    return out
 
 
 def _locate(bgr: np.ndarray, plane: Plane, hint_mm: Box | None) -> list[Box]:

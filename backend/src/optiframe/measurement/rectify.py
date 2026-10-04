@@ -13,7 +13,11 @@ from optiframe.measurement.reference import DetectedReference
 
 MAX_TILT_DEG = 40.0
 # Blurry = edges wider than this in mm AND in px (a sharp edge at low resolution is wide in mm but not blur).
-MAX_EDGE_WIDTH_MM = 0.8
+# At phone-scale resolutions a clean but anti-aliased card edge is commonly
+# 0.8–0.9 mm wide after rectification.  Keep the pixel guard, but leave a small
+# margin so these photos are measured (with their uncertainty reflected) rather
+# than rejected as motion blur.
+MAX_EDGE_WIDTH_MM = 1.0
 MAX_EDGE_WIDTH_PX = 5.0
 
 
