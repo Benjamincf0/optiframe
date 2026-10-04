@@ -172,6 +172,8 @@ export default function Customize() {
           <FrameViewer
             color={COLORS.find(col => col.id === c.color)?.hex ?? '#1a1a1a'}
             colorLabel={COLORS.find(col => col.id === c.color)?.label ?? 'Matte black'}
+            measurements={state.measurements}
+            frameParams={c.frameParams}
           />
         </div>
       </div>

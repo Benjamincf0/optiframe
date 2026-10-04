@@ -1,78 +1,144 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { RotateCcw } from 'lucide-react'
+import type { FrameParams } from '../context/SessionContext'
+import type { MeasureResponse } from '../api/types'
 
 type FrameViewerProps = {
   color: string
   colorLabel: string
+  measurements: MeasureResponse | null
+  frameParams: FrameParams
 }
 
-/** A self-contained, responsive product viewer for the supplied glasses model. */
-export default function FrameViewer({ color, colorLabel }: FrameViewerProps) {
+type Point = [number, number]
+
+const disposeObject = (object: THREE.Object3D) => {
+  object.traverse(child => {
+    if (!(child instanceof THREE.Mesh)) return
+    child.geometry.dispose()
+    const materials = Array.isArray(child.material) ? child.material : [child.material]
+    materials.forEach(material => material.dispose())
+  })
+}
+
+function centreContour(points: Point[]) {
+  const xs = points.map(([x]) => x)
+  const ys = points.map(([, y]) => y)
+  const cx = (Math.min(...xs) + Math.max(...xs)) / 2
+  const cy = (Math.min(...ys) + Math.max(...ys)) / 2
+  return {
+    points: points.filter((_, i) => i % Math.max(1, Math.ceil(points.length / 240)) === 0)
+      .map(([x, y]) => [x - cx, y - cy] as Point),
+    width: Math.max(...xs) - Math.min(...xs),
+  }
+}
+
+function ringShape(points: Point[], cx: number, rim: number) {
+  const outer = points.map(([x, y]) => {
+    const length = Math.hypot(x, y) || 1
+    return [x + (x / length) * rim + cx, y + (y / length) * rim] as Point
+  })
+  const shape = new THREE.Shape()
+  shape.moveTo(outer[0][0], outer[0][1])
+  outer.slice(1).forEach(([x, y]) => shape.lineTo(x, y))
+  shape.closePath()
+  const hole = new THREE.Path()
+  hole.moveTo(points[0][0] + cx, points[0][1])
+  points.slice(1).forEach(([x, y]) => hole.lineTo(x + cx, y))
+  hole.closePath()
+  shape.holes.push(hole)
+  return shape
+}
+
+/** A contour-driven product preview. Its rims use the same measured lens outlines as the generated frame. */
+export default function FrameViewer({ color, colorLabel, measurements, frameParams }: FrameViewerProps) {
   const hostRef = useRef<HTMLDivElement>(null)
-  const materialRef = useRef<THREE.MeshStandardMaterial[]>([])
   const resetCameraRef = useRef<(() => void) | null>(null)
-  const colorRef = useRef(color)
-  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading')
-
-  colorRef.current = color
-
-  useEffect(() => {
-    const isCrystal = color === '#d4d4d4'
-    for (const material of materialRef.current) {
-      material.color.set(color)
-      material.transparent = isCrystal
-      material.opacity = isCrystal ? 0.72 : 1
-      material.needsUpdate = true
-    }
-  }, [color])
 
   useEffect(() => {
     const host = hostRef.current
-    if (!host) return
-
-    let disposed = false
+    if (!host || !measurements) return
     let frameId = 0
     const scene = new THREE.Scene()
     scene.background = new THREE.Color('#f4f4f5')
-
-    const camera = new THREE.PerspectiveCamera(35, 1, 0.01, 100)
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false })
+    const camera = new THREE.PerspectiveCamera(35, 1, 0.01, 300)
+    const renderer = new THREE.WebGLRenderer({ antialias: true })
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     renderer.shadowMap.enabled = true
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap
     renderer.outputColorSpace = THREE.SRGBColorSpace
     renderer.toneMapping = THREE.ACESFilmicToneMapping
-    renderer.toneMappingExposure = 1.05
     host.appendChild(renderer.domElement)
-
     const controls = new OrbitControls(camera, renderer.domElement)
     controls.enableDamping = true
     controls.dampingFactor = 0.07
     controls.enablePan = false
-    controls.minDistance = 1.4
-    controls.maxDistance = 5
-
-    scene.add(new THREE.HemisphereLight(0xffffff, 0xd4d4d8, 2.3))
+    scene.add(new THREE.HemisphereLight(0xffffff, 0xd4d4d8, 2.2))
     const key = new THREE.DirectionalLight(0xffffff, 3)
-    key.position.set(3, 4, 5)
+    key.position.set(30, 40, 60)
     key.castShadow = true
     scene.add(key)
-    const rim = new THREE.DirectionalLight(0xffffff, 1.4)
-    rim.position.set(-4, 1, -3)
-    scene.add(rim)
+    const rimLight = new THREE.DirectionalLight(0xffffff, 1.1)
+    rimLight.position.set(-35, 15, -40)
+    scene.add(rimLight)
 
-    const floor = new THREE.Mesh(
-      new THREE.PlaneGeometry(20, 20),
-      new THREE.ShadowMaterial({ color: 0x18181b, opacity: 0.14 }),
-    )
+    const material = new THREE.MeshStandardMaterial({ color, roughness: 0.32, metalness: 0.04, transparent: color === '#d4d4d4', opacity: color === '#d4d4d4' ? 0.72 : 1 })
+    const glasses = new THREE.Group()
+    const right = centreContour(measurements.right.contour_mm)
+    const left = centreContour(measurements.left.contour_mm)
+    const rightX = -(frameParams.bridgeMm / 2 + right.width / 2)
+    const leftX = frameParams.bridgeMm / 2 + left.width / 2
+    const rim = 1.2 + frameParams.rimOffsetMm + frameParams.clipClearanceMm
+    const depth = frameParams.depthMm
+    for (const [contour, x] of [[right, rightX], [left, leftX]] as const) {
+      const geometry = new THREE.ExtrudeGeometry(ringShape(contour.points, x, rim), { depth, bevelEnabled: true, bevelThickness: 0.22, bevelSize: 0.22, bevelSegments: 2 })
+      const mesh = new THREE.Mesh(geometry, material)
+      mesh.castShadow = true
+      mesh.receiveShadow = true
+      glasses.add(mesh)
+    }
+
+    // Match the generated front's bridge and tenons; include visual temples for the style view.
+    const bridgeY = Math.min(measurements.right.B, measurements.left.B) * 0.15
+    const bridge = new THREE.Mesh(new THREE.BoxGeometry(frameParams.bridgeMm + 3, 4, depth), material)
+    bridge.position.set(0, bridgeY, depth / 2)
+    glasses.add(bridge)
+    const outerRight = rightX - right.width / 2 - rim
+    const outerLeft = leftX + left.width / 2 + rim
+    for (const [side, outerX] of [[-1, outerRight], [1, outerLeft]] as const) {
+      const tenon = new THREE.Mesh(new THREE.BoxGeometry(11, 7, depth), material)
+      tenon.position.set(outerX + side * 5.5, bridgeY, depth / 2)
+      glasses.add(tenon)
+      const path = new THREE.CatmullRomCurve3([
+        new THREE.Vector3(outerX + side * 10, bridgeY, depth / 2),
+        new THREE.Vector3(outerX + side * 13, bridgeY + 1, -8),
+        new THREE.Vector3(outerX + side * 15, bridgeY - 2, -40),
+        new THREE.Vector3(outerX + side * 10, bridgeY - 12, -63),
+      ])
+      const temple = new THREE.Mesh(new THREE.TubeGeometry(path, 24, 1.25, 8, false), material)
+      temple.castShadow = true
+      glasses.add(temple)
+    }
+
+    const bounds = new THREE.Box3().setFromObject(glasses)
+    const centre = bounds.getCenter(new THREE.Vector3())
+    glasses.position.sub(centre)
+    scene.add(glasses)
+    const size = bounds.getSize(new THREE.Vector3())
+    const distance = Math.max(size.x, size.y) * 1.25
+    const resetCamera = () => {
+      camera.position.set(distance * 0.12, distance * 0.14, distance * 1.35)
+      controls.target.set(0, 0, -12)
+      controls.update()
+    }
+    resetCamera()
+    resetCameraRef.current = resetCamera
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), new THREE.ShadowMaterial({ color: 0x18181b, opacity: 0.12 }))
     floor.rotation.x = -Math.PI / 2
-    floor.position.y = -0.63
+    floor.position.y = -size.y / 2 - 8
     floor.receiveShadow = true
     scene.add(floor)
-
     const resize = () => {
       const { width, height } = host.getBoundingClientRect()
       if (!width || !height) return
@@ -80,99 +146,34 @@ export default function FrameViewer({ color, colorLabel }: FrameViewerProps) {
       camera.updateProjectionMatrix()
       renderer.setSize(width, height, false)
     }
-    const resizeObserver = new ResizeObserver(resize)
-    resizeObserver.observe(host)
+    const observer = new ResizeObserver(resize)
+    observer.observe(host)
     resize()
-
-    const resetCamera = () => {
-      camera.position.set(0, 0.2, 3.1)
-      controls.target.set(0, -0.05, 0)
-      controls.update()
-    }
-    resetCamera()
-    resetCameraRef.current = resetCamera
-
-    new GLTFLoader().load(
-      '/reading_glasses.glb',
-      gltf => {
-        if (disposed) return
-        const model = gltf.scene
-        const bounds = new THREE.Box3().setFromObject(model)
-        const center = bounds.getCenter(new THREE.Vector3())
-        const size = bounds.getSize(new THREE.Vector3())
-        // Normalize asset units so it remains predictably framed whatever export scale was used.
-        const scale = 2.4 / Math.max(size.x, size.y, size.z)
-        model.scale.setScalar(scale)
-        model.position.set(-center.x * scale, -center.y * scale, -center.z * scale)
-        model.rotation.x = -0.08
-
-        const materials: THREE.MeshStandardMaterial[] = []
-        model.traverse(child => {
-          if (!(child instanceof THREE.Mesh)) return
-          child.castShadow = true
-          child.receiveShadow = true
-          const source = Array.isArray(child.material) ? child.material[0] : child.material
-          const material = new THREE.MeshStandardMaterial({
-            color: colorRef.current,
-            roughness: 0.32,
-            metalness: 0.04,
-            transparent: colorRef.current === '#d4d4d4',
-            opacity: colorRef.current === '#d4d4d4' ? 0.72 : 1,
-          })
-          if (source?.map) material.map = source.map
-          child.material = material
-          materials.push(material)
-        })
-        materialRef.current = materials
-        scene.add(model)
-        setStatus('ready')
-      },
-      undefined,
-      () => !disposed && setStatus('error'),
-    )
-
     const render = () => {
       frameId = requestAnimationFrame(render)
       controls.update()
       renderer.render(scene, camera)
     }
     render()
-
     return () => {
-      disposed = true
       cancelAnimationFrame(frameId)
-      resizeObserver.disconnect()
+      observer.disconnect()
       controls.dispose()
-      scene.traverse(object => {
-        if (object instanceof THREE.Mesh) {
-          object.geometry.dispose()
-          const materials = Array.isArray(object.material) ? object.material : [object.material]
-          materials.forEach(material => material.dispose())
-        }
-      })
+      disposeObject(glasses)
+      floor.geometry.dispose()
+      ;(floor.material as THREE.Material).dispose()
       renderer.dispose()
       renderer.domElement.remove()
-      materialRef.current = []
       resetCameraRef.current = null
     }
-  }, []) // The scene is created once; color is applied by the effect above.
+  }, [color, frameParams, measurements])
 
+  if (!measurements) return null
   return (
     <div className="relative h-64 overflow-hidden rounded-2xl border border-zinc-200 bg-zinc-100">
       <div ref={hostRef} className="absolute inset-0 touch-none" aria-label={`Interactive 3D preview of ${colorLabel} glasses`} />
-      {status === 'loading' && (
-        <div className="absolute inset-0 grid place-items-center bg-zinc-100/80 text-xs font-medium text-zinc-500">Loading 3D preview…</div>
-      )}
-      {status === 'error' && (
-        <div className="absolute inset-0 grid place-items-center bg-zinc-100 px-8 text-center text-xs text-zinc-500">The 3D frame preview could not be loaded.</div>
-      )}
-      {status === 'ready' && <p className="pointer-events-none absolute bottom-3 left-3 rounded-full bg-white/85 px-2.5 py-1 text-[10px] font-medium text-zinc-500 shadow-sm">Drag to rotate · scroll to zoom</p>}
-      <button
-        type="button"
-        onClick={() => resetCameraRef.current?.()}
-        className="absolute right-3 top-3 grid h-8 w-8 place-items-center rounded-full bg-white/90 text-zinc-600 shadow-sm transition hover:bg-white"
-        aria-label="Reset 3D view"
-      >
+      <p className="pointer-events-none absolute bottom-3 left-3 rounded-full bg-white/85 px-2.5 py-1 text-[10px] font-medium text-zinc-500 shadow-sm">Measured frame shape · Drag to rotate</p>
+      <button type="button" onClick={() => resetCameraRef.current?.()} className="absolute right-3 top-3 grid h-8 w-8 place-items-center rounded-full bg-white/90 text-zinc-600 shadow-sm transition hover:bg-white" aria-label="Reset 3D view">
         <RotateCcw size={15} />
       </button>
     </div>
