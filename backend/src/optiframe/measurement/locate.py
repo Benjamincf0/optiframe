@@ -63,7 +63,10 @@ def _candidates(gray: np.ndarray, allowed: np.ndarray, scale: float) -> list[tup
     return sorted(out, reverse=True)
 
 
-MAX_CANDIDATES = 4
+# Four contour proposals can all be fragments of a reflective lens on a textured
+# surface.  Keep room for one independent Hough proposal as well: the segmenter
+# still verifies every proposal before it is accepted.
+MAX_CANDIDATES = 5
 Box = tuple[float, float, float, float]
 
 

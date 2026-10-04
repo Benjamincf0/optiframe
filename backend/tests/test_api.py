@@ -111,6 +111,9 @@ def test_measure_single_lens_and_contour_feeds_generate(client):
     "Gemini_Generated_Image_hhigiihhigiihhig.jpg",
     "Gemini_Generated_Image_1naf0e1naf0e1naf.jpg",
     "Gemini_Generated_Image_vf2jlhvf2jlhvf2j.jpg",
+    "Gemini_Generated_Image_4a4qfv4a4qfv4a4q.jpg",
+    "Gemini_Generated_Image_b6ws07b6ws07b6ws.jpg",
+    "Gemini_Generated_Image_nxvhrenxvhrenxvh.jpg",
     "hard_blue_card_light.jpg",
 ])
 def test_repository_lens_photo_feeds_generate(client, filename):
