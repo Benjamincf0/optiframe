@@ -44,7 +44,7 @@ All routes are under `/api`. Every one of them is needed by at least one require
 | Method & path | Purpose | Req |
 |---|---|---|
 | `GET /api/health` | Liveness check. Also reports whether the ONNX model loaded | hosting |
-| `GET /api/options` | Single source of truth for reference presets (credit card 85.60×53.98, A4 297×210, supported ArUco dictionaries), parameter ranges/defaults (bridge 12–30 step 0.5 default 18, depth 3–8, rim offset 0.5–3, clip clearance 0.1–0.3), patterns, filament colors (≥6), materials with price/g, shipping fee, currency, engraving rules (max 20 chars, allowed charset) | FR-CAP-03, FR-FACE-05/07, FR-CUST-01..04, FR-CHK-03 |
+| `GET /api/options` | Single source of truth for reference presets (credit card 85.60×53.98, A4 297×210, supported ArUco dictionaries), parameter ranges/defaults (bridge 12–30 step 0.5 default 18, depth 3–8, rim offset 0.5–3, clip clearance 0.1–0.3), patterns, filament colors (≥6), materials with price/g, shipping fee, currency, engraving rules (max 8 chars, allowed charset) | FR-CAP-03, FR-FACE-05/07, FR-CUST-01..04, FR-CHK-03 |
 
 ### 3.2 Measurement
 
@@ -268,23 +268,17 @@ M2 comes before M3 even though it's harder, because segmentation of transparent 
 
 ---
 
-## 9. Open decisions
+## 9. Decisions
 
-1. **Progress reporting (FR-PROC-01, FR-GEN-01).** The spec defines synchronous request/response, which can't report real stage progress.
-   - *Recommended*: keep it synchronous and have the client step through the status messages on a timer. This is stateless, works on any host, and the budgets are short.
-   - *Alternative*: job endpoints (`POST` → 202 + job ID, `GET /api/jobs/{id}` with the current stage) for real progress. This needs a shared job store (Redis) once there's more than one worker.
-2. **Payments.**
-   - *Recommended*: build the `fake` provider now with Stripe behind the same interface (PaymentIntent created after mesh validation, plus webhook).
-   - Does SN-SF's humanitarian context need non-card options, or free orders sponsored by an NGO?
-3. **Engraving location.** 20 characters at a legible ≥ 2.5 mm cap height needs ~40–45 mm of flat surface. A typical tenon/end piece is only ~10–15 mm.
-   - *Recommended*: also generate temples (Q4) and engrave on the inner face of the right temple.
-   - *Otherwise*: cap the length at what fits on the tenon (~8 chars).
-4. **Temples (arms).** The spec only mentions the front, bridge and tenons, yet the product ships glasses.
-   - *Recommended*: generate the front plus two temples as separate bodies laid flat in the same STL, with a print-in-place or pin hinge, and a temple length parameter (default 140 mm, range 120–155).
-   - This also has to fit the printer bed.
-5. **Accounts.**
-   - *Recommended*: email + password with bearer JWT.
-   - *Alternative*: passwordless magic link, which needs working email from day one.
-6. **Spec errors to fix in REQUIREMENTS.md** (frontend, but they affect the parameters the backend receives):
-   - FR-FACE-04's bridge formula "PD minus both lens A values" gives a negative number (63 − 52 − 52). The correct formula is **DBL = PD − (A_L + A_R)/2**, assuming the optical centres are at the box centres. For prescription lenses, optical-centre decentration is ignored; this is acceptable for v1 but should be documented.
-   - The frontend pages (`Rectify`, `Segment`, `FrameDesign`, `Export`, …) don't match the REQUIREMENTS page map, even though CLAUDE.md says they do.
+Resolved (2026-10-03):
+- **Payments**: fake provider only for now; Stripe later behind the same interface. Optional **sponsored free orders** via admin-issued sponsor codes (`SPONSORSHIP_ENABLED`).
+- **Engraving**: max **8 characters** on the inner right tenon (overrides FR-CUST-04's 20).
+- **Accounts**: email + password, bearer JWT.
+
+Still open:
+1. **Progress reporting**: synchronous + client-side timed status messages (recommended) vs. job polling.
+2. **Temples**: generate front only, or front + temples with hinge in the same STL?
+
+Spec fixes still needed in REQUIREMENTS.md: FR-FACE-04 bridge formula should be DBL = PD − (A_L + A_R)/2; FR-CUST-04 engraving limit → 8; frontend page names don't match the page map.
+
+The authoritative API spec now lives in `../CLAUDE.md` § "Backend API spec".
