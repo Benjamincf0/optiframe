@@ -1,4 +1,4 @@
-const STEPS = ['Capture', 'Rectify', 'Segment', 'Measure', 'Frame', 'Export', 'Order']
+const STEPS = ['Capture', 'Scan', 'Face', 'Style', 'Preview', 'Order']
 
 interface StepProgressProps {
   current: number // 1-indexed
@@ -6,28 +6,26 @@ interface StepProgressProps {
 
 export default function StepProgress({ current }: StepProgressProps) {
   return (
-    <div className="px-5 pt-3 pb-4">
-      <div className="flex items-center gap-1">
+    <div className="px-5 pt-2 pb-4">
+      <div className="flex items-start gap-1">
         {STEPS.map((label, i) => {
           const step = i + 1
           const done = step < current
           const active = step === current
           return (
-            <div key={label} className="flex items-center gap-1 flex-1 min-w-0">
-              <div className="flex flex-col items-center gap-1 flex-1 min-w-0">
-                <div
-                  className={`h-1 w-full rounded-full transition-all ${
-                    done ? 'bg-zinc-900' : active ? 'bg-zinc-900' : 'bg-zinc-200'
-                  }`}
-                />
-                <span
-                  className={`text-[10px] font-medium truncate ${
-                    active ? 'text-zinc-900' : done ? 'text-zinc-400' : 'text-zinc-300'
-                  }`}
-                >
-                  {label}
-                </span>
-              </div>
+            <div key={label} className="flex flex-col items-center gap-1 flex-1 min-w-0">
+              <div
+                className={`h-1 w-full rounded-full transition-all duration-300 ${
+                  done ? 'bg-zinc-900' : active ? 'bg-zinc-900' : 'bg-zinc-200'
+                }`}
+              />
+              <span
+                className={`text-[10px] font-medium truncate ${
+                  active ? 'text-zinc-900' : done ? 'text-zinc-400' : 'text-zinc-300'
+                }`}
+              >
+                {label}
+              </span>
             </div>
           )
         })}
