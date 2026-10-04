@@ -2,6 +2,7 @@
 
 import io
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -104,6 +105,24 @@ def test_measure_single_lens_and_contour_feeds_generate(client):
     assert abs(lens["A"] - sc.A) < 0.5
     g = client.post("/api/generate", json=design(left_contour_mm=lens["contour_mm"], right_contour_mm=lens["contour_mm"]))
     assert g.status_code == 200
+
+
+@pytest.mark.parametrize("filename", [
+    "Gemini_Generated_Image_hhigiihhigiihhig.jpg",
+    "Gemini_Generated_Image_1naf0e1naf0e1naf.jpg",
+    "Gemini_Generated_Image_vf2jlhvf2jlhvf2j.jpg",
+    "hard_blue_card_light.jpg",
+])
+def test_repository_lens_photo_feeds_generate(client, filename):
+    """Every checked-in real-photo fixture must make it through preview generation."""
+    image = Path(__file__).parents[2] / "test" / filename
+    r = client.post("/api/measure/lens", files={"image": (filename, image.read_bytes(), "image/jpeg")}, data={
+        "side": "left", "reference": '{"type":"credit_card"}',
+    })
+    assert r.status_code == 200, r.text
+    lens = r.json()["lens"]
+    g = client.post("/api/generate", json=design(left_contour_mm=lens["contour_mm"], right_contour_mm=lens["contour_mm"]))
+    assert g.status_code == 200, g.text
 
 
 def test_measure_errors_name_the_side(client):

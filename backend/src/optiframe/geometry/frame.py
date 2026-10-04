@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 import numpy as np
 from manifold3d import Manifold, OpType
-from shapely import affinity
+from shapely import affinity, make_valid
 from shapely.geometry import LineString, Polygon, box
 from shapely.ops import unary_union
 
@@ -39,7 +39,10 @@ ENGRAVING_CAP_MM = 2.2
 ENGRAVING_MARGIN_MM = 0.6
 PATTERN_INSET_MM = 0.4
 OVERLAP = 0.05  # small overlaps make unions robust
+# Capture accepts lenses up to 90 mm, including the repository's round and
+# tall-lens fixtures.
 MAX_BED_MM = 220.0
+MAX_LENS_MM = 90.0
 
 
 @dataclass
@@ -64,18 +67,32 @@ class FrameModel:
 
 
 def prepare_contour(pts: np.ndarray, side: str) -> Polygon:
-    """Validate a lens contour and centre it on its boxing centre."""
+    """Validate a lens contour and centre it on its boxing centre.
+
+    The measurement pipeline samples a traced edge densely.  At the precision
+    used for the API, two adjacent edge segments can occasionally touch or
+    cross by a few microns.  That is visually indistinguishable from a clean
+    lens outline, but ``Polygon.is_valid`` rejects it.  Preserve the useful
+    polygon in that narrowly-defined case; contours that resolve to multiple
+    areas (for example a bow-tie) remain invalid.
+    """
     pts = np.asarray(pts, dtype=np.float64)
     if pts.ndim != 2 or pts.shape[1] != 2 or not (16 <= len(pts) <= 4000) or not np.all(np.isfinite(pts)):
         raise AppError("INVALID_CONTOUR", "Lens outline must have 16–4000 points.", side=side)
     if np.allclose(pts[0], pts[-1]):
         pts = pts[:-1]
     poly = Polygon(pts)
+    if not poly.is_valid:
+        repaired = make_valid(poly)
+        polygons = ([repaired] if repaired.geom_type == "Polygon"
+                    else [g for g in getattr(repaired, "geoms", ()) if g.geom_type == "Polygon"])
+        if len(polygons) == 1:
+            poly = polygons[0]
     if not poly.is_valid or poly.area <= 0:
         raise AppError("INVALID_CONTOUR", "Lens outline crosses itself.", side=side)
     minx, miny, maxx, maxy = poly.bounds
     a, b = maxx - minx, maxy - miny
-    if not (20 <= a <= 80 and 15 <= b <= 70):
+    if not (20 <= a <= MAX_LENS_MM and 15 <= b <= MAX_LENS_MM):
         raise AppError("INVALID_CONTOUR", f"Lens size {a:.1f} × {b:.1f} mm is outside the supported range.", side=side)
     poly = affinity.translate(poly, -(minx + maxx) / 2, -(miny + maxy) / 2)
     return poly

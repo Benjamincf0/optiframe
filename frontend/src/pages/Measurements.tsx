@@ -33,7 +33,8 @@ export default function Measurements() {
   const vbH = (maxY - minY) + pad * 2
 
   const svgPts = contour
-    .map(([x, y]) => `${x - minX + pad},${y - minY + pad}`)
+    // Contour coordinates use y-up; SVG/image coordinates use y-down.
+    .map(([x, y]) => `${x - minX + pad},${maxY - y + pad}`)
     .join(' ')
 
   return (

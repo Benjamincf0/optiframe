@@ -10,6 +10,7 @@ from hypothesis import strategies as st
 from synth import lens_shape
 
 from optiframe.errors import AppError
+from optiframe.geometry.frame import prepare_contour
 from optiframe.geometry.pipeline import generate, sign_design, verify_design
 from optiframe.geometry.validate import check_mesh, load_stl
 
@@ -83,6 +84,18 @@ def test_self_intersecting_contour_rejected():
     with pytest.raises(AppError) as e:
         generate(design(left_contour_mm=bow), SECRET)
     assert e.value.code == "INVALID_CONTOUR" and e.value.side == "left"
+
+
+def test_single_area_contour_repaired_before_generation():
+    # A traced edge can contain a tiny self-touch after coordinates are rounded
+    # for the JSON response.  Shapely repairs this to one polygon; it must not
+    # be rejected after the user has already approved the preview.
+    traced = np.array([
+        [-25, -20], [0, -20], [25, -20], [25, 0], [25, 20], [10, 20],
+        [0, 20], [0, 19.999], [0, 20], [-10, 20], [-25, 20], [-25, 0],
+        [-25, -10], [-25, -20], [-25, -20], [-25, -20],
+    ])
+    assert prepare_contour(traced, "left").is_valid
 
 
 def test_implausible_lens_size_rejected():
